@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.e2e-dist/
+.weave/
+weave.config.yaml
+*.local.yaml
+docs/openspec
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+/.idea/

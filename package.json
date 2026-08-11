@@ -1,0 +1,51 @@
+{
+  "name": "weave",
+  "version": "0.1.0",
+  "description": "A layered CodingAgent",
+  "type": "module",
+  "main": "dist/main.js",
+  "bin": {
+    "weave": "dist/main.js"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:e2e": "tsc -p tests/e2e/tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/main.js",
+    "dev": "tsx src/main.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:tui": "vitest run tests/unit/interaction tests/integration/tui",
+    "e2e:tui:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/e2e/tui-windows.ps1",
+    "e2e:tui:wsl": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/e2e/tui-wsl.ps1",
+    "smoke:live": "tsx tests/live/multi-protocol-smoke.ts",
+    "smoke:tui:wsl": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/live/tui-wsl-smoke.ps1",
+    "docs:link": "node scripts/ensure-docs-link.mjs",
+    "docs:dev": "vitepress docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.116.0",
+    "ink": "^7.1.1",
+    "openai": "^7.4.0",
+    "react": "^19.2.8",
+    "react-devtools-core": "^6.1.2",
+    "strip-ansi": "^7.2.0",
+    "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.0",
+    "ink-testing-library": "^4.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitepress": "1.6.4",
+    "vitest": "^3.0.4"
+  }
+}
