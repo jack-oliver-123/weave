@@ -68,4 +68,49 @@ describe('TUI reducer', () => {
     expect(state).not.toHaveProperty('cost');
     expect(state).not.toHaveProperty('contextPercentage');
   });
+
+  it('生成期间连续入队并以空行合并消费', () => {
+    let state = reduceTuiState(initialTuiState(), { type: 'turn_event', event: start });
+    state = reduceTuiState(state, { type: 'queue_message', value: '第一条' });
+    state = reduceTuiState(state, { type: 'queue_message', value: '第二条' });
+    expect(state.queuedMessages).toEqual(['第一条', '第二条']);
+    expect(state.composer).toBe('');
+    state = reduceTuiState(state, { type: 'consume_queue' });
+    expect(state.pendingSubmission).toBe('第一条\n\n第二条');
+    expect(state.queuedMessages).toEqual([]);
+  });
+
+  it.each(['truncated', 'refused'] as const)('%s 终态暂停队列', (status) => {
+    let state = reduceTuiState(initialTuiState(), { type: 'turn_event', event: start });
+    state = reduceTuiState(state, { type: 'queue_message', value: '补充' });
+    state = reduceTuiState(state, { type: 'turn_event', event: {
+      type: 'turn_complete', turnId: 't1', status,
+      finishReason: status === 'truncated' ? 'max_tokens' : 'refusal', durationMs: 10,
+    } });
+    expect(state.queueStatus).toBe('paused');
+  });
+
+  it('取消和错误暂停队列且错误恢复不覆盖草稿', () => {
+    let cancelled = reduceTuiState(initialTuiState(), { type: 'turn_event', event: start });
+    cancelled = reduceTuiState(cancelled, { type: 'queue_message', value: '补充' });
+    cancelled = reduceTuiState(cancelled, { type: 'turn_event', event: { type: 'turn_cancelled', turnId: 't1', durationMs: 10 } });
+    expect(cancelled.queueStatus).toBe('paused');
+
+    let failed = reduceTuiState(initialTuiState(), { type: 'turn_event', event: start });
+    failed = reduceTuiState(failed, { type: 'set_composer', value: '新草稿' });
+    failed = reduceTuiState(failed, { type: 'queue_message', value: '补充' });
+    failed = reduceTuiState(failed, { type: 'set_composer', value: '新草稿' });
+    failed = reduceTuiState(failed, { type: 'turn_event', event: {
+      type: 'turn_error', turnId: 't1', error: { code: 'X', message: '失败', retryable: true }, restoreInput: '原问题', durationMs: 10,
+    } });
+    expect(failed).toMatchObject({ queueStatus: 'paused', composer: '原问题\n\n新草稿' });
+  });
+
+  it('Ctrl+Z 只撤回队尾且保留当前草稿', () => {
+    let state = reduceTuiState(initialTuiState(), { type: 'queue_message', value: '第一条' });
+    state = reduceTuiState(state, { type: 'queue_message', value: '第二条' });
+    state = reduceTuiState(state, { type: 'set_composer', value: '当前草稿' });
+    state = reduceTuiState(state, { type: 'undo_queue' });
+    expect(state).toMatchObject({ queuedMessages: ['第一条'], composer: '第二条\n\n当前草稿' });
+  });
 });

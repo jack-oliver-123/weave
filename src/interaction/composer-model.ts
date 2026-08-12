@@ -1,3 +1,5 @@
+import { nextGraphemeBoundary, previousGraphemeBoundary, wrapDisplayText } from './display-width.js';
+
 export interface ComposerState {
   readonly value: string;
   readonly cursor: number;
@@ -8,6 +10,8 @@ export interface ComposerKey {
   readonly shift?: boolean;
   readonly leftArrow?: boolean;
   readonly rightArrow?: boolean;
+  readonly upArrow?: boolean;
+  readonly downArrow?: boolean;
   readonly home?: boolean;
   readonly end?: boolean;
   readonly backspace?: boolean;
@@ -24,6 +28,7 @@ export function applyComposerKey(
   input: string,
   key: ComposerKey,
   canSubmit: boolean,
+  displayColumns = Number.MAX_SAFE_INTEGER,
 ): ComposerResult {
   if (key.return === true) {
     if (key.shift === true) return { state: insertText(state, '\n') };
@@ -32,15 +37,19 @@ export function applyComposerKey(
     }
     return { state };
   }
-  if (key.leftArrow === true) return { state: { ...state, cursor: Math.max(0, state.cursor - 1) } };
-  if (key.rightArrow === true) return { state: { ...state, cursor: Math.min(state.value.length, state.cursor + 1) } };
-  if (key.home === true) return { state: { ...state, cursor: lineStart(state.value, state.cursor) } };
-  if (key.end === true) return { state: { ...state, cursor: lineEnd(state.value, state.cursor) } };
+  if (key.leftArrow === true) return { state: { ...state, cursor: previousGraphemeBoundary(state.value, state.cursor) } };
+  if (key.rightArrow === true) return { state: { ...state, cursor: nextGraphemeBoundary(state.value, state.cursor) } };
+  if (key.upArrow === true) return { state: { ...state, cursor: moveVertical(state.value, state.cursor, displayColumns, -1) } };
+  if (key.downArrow === true) return { state: { ...state, cursor: moveVertical(state.value, state.cursor, displayColumns, 1) } };
+  if (key.home === true) return { state: { ...state, cursor: visualLineBoundary(state.value, state.cursor, displayColumns, 'start') } };
+  if (key.end === true) return { state: { ...state, cursor: visualLineBoundary(state.value, state.cursor, displayColumns, 'end') } };
   if (key.backspace === true && state.cursor > 0) {
-    return { state: { value: state.value.slice(0, state.cursor - 1) + state.value.slice(state.cursor), cursor: state.cursor - 1 } };
+    const previous = previousGraphemeBoundary(state.value, state.cursor);
+    return { state: { value: state.value.slice(0, previous) + state.value.slice(state.cursor), cursor: previous } };
   }
   if (key.delete === true && state.cursor < state.value.length) {
-    return { state: { value: state.value.slice(0, state.cursor) + state.value.slice(state.cursor + 1), cursor: state.cursor } };
+    const next = nextGraphemeBoundary(state.value, state.cursor);
+    return { state: { value: state.value.slice(0, state.cursor) + state.value.slice(next), cursor: state.cursor } };
   }
   if (input.length > 0) return { state: insertText(state, input) };
   return { state };
@@ -57,12 +66,47 @@ function insertText(state: ComposerState, text: string): ComposerState {
   };
 }
 
-function lineStart(value: string, cursor: number): number {
-  const precedingNewline = value.lastIndexOf('\n', Math.max(0, cursor - 1));
-  return precedingNewline + 1;
+function visualLineBoundary(value: string, cursor: number, width: number, boundary: 'start' | 'end'): number {
+  const lines = wrapDisplayText(value, width);
+  const row = findCursorRow(lines, cursor);
+  const line = lines[row];
+  if (line === undefined) return cursor;
+  if (boundary === 'start') return line.start;
+  return lineContentEnd(value, line.start, line.end);
 }
 
-function lineEnd(value: string, cursor: number): number {
-  const followingNewline = value.indexOf('\n', cursor);
-  return followingNewline < 0 ? value.length : followingNewline;
+function moveVertical(value: string, cursor: number, width: number, direction: -1 | 1): number {
+  const lines = wrapDisplayText(value, width);
+  const currentRow = findCursorRow(lines, cursor);
+  const target = lines[currentRow + direction];
+  const current = lines[currentRow];
+  if (target === undefined || current === undefined) return cursor;
+  const desiredColumn = displayColumn(value.slice(current.start, cursor));
+  return indexAtColumn(value, target.start, target.end, desiredColumn);
+}
+
+function findCursorRow(lines: readonly { start: number; end: number }[], cursor: number): number {
+  const index = lines.findIndex((line, row) => line.start <= cursor && (cursor < line.end || row === lines.length - 1));
+  return index < 0 ? Math.max(0, lines.length - 1) : index;
+}
+
+function displayColumn(value: string): number {
+  return wrapDisplayText(value, Number.MAX_SAFE_INTEGER)[0]?.width ?? 0;
+}
+
+function indexAtColumn(value: string, start: number, end: number, column: number): number {
+  let index = start;
+  const contentEnd = lineContentEnd(value, start, end);
+  while (index < contentEnd) {
+    const next = nextGraphemeBoundary(value, index);
+    if (displayColumn(value.slice(start, next)) > column) break;
+    index = next;
+  }
+  return index;
+}
+
+function lineContentEnd(value: string, start: number, end: number): number {
+  if (end <= start) return end;
+  if (value[end - 1] === '\n') return end > start + 1 && value[end - 2] === '\r' ? end - 2 : end - 1;
+  return value[end - 1] === '\r' ? end - 1 : end;
 }

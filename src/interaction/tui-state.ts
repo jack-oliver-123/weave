@@ -24,20 +24,60 @@ export interface TuiState {
   readonly composer: string;
   readonly activeTurnId?: string;
   readonly streamStatus: 'idle' | 'waiting' | 'streaming';
+  readonly queuedMessages: readonly string[];
+  readonly queueStatus: 'active' | 'paused';
+  readonly pendingSubmission?: string;
+  readonly feedback?: string;
 }
 
 export type TuiAction =
   | { readonly type: 'turn_event'; readonly event: TurnEvent }
   | { readonly type: 'set_composer'; readonly value: string }
-  | { readonly type: 'clear_composer' };
+  | { readonly type: 'clear_composer' }
+  | { readonly type: 'queue_message'; readonly value: string }
+  | { readonly type: 'consume_queue' }
+  | { readonly type: 'clear_pending_submission' }
+  | { readonly type: 'undo_queue' }
+  | { readonly type: 'set_feedback'; readonly value?: string };
 
 export function initialTuiState(): TuiState {
-  return { transcript: [], composer: '', streamStatus: 'idle' };
+  return { transcript: [], composer: '', streamStatus: 'idle', queuedMessages: [], queueStatus: 'active' };
 }
 
 export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
   if (action.type === 'set_composer') return { ...state, composer: action.value };
   if (action.type === 'clear_composer') return { ...state, composer: '' };
+  if (action.type === 'queue_message') {
+    if (action.value.trim().length === 0) return state;
+    return {
+      ...state,
+      queuedMessages: [...state.queuedMessages, action.value],
+      composer: '',
+      feedback: `已排队 ${state.queuedMessages.length + 1} 条`,
+    };
+  }
+  if (action.type === 'consume_queue') {
+    if (state.queuedMessages.length === 0) return state;
+    return {
+      ...state,
+      queuedMessages: [],
+      queueStatus: 'active',
+      pendingSubmission: state.queuedMessages.join('\n\n'),
+      feedback: undefined,
+    };
+  }
+  if (action.type === 'clear_pending_submission') return { ...state, pendingSubmission: undefined };
+  if (action.type === 'undo_queue') {
+    const restored = state.queuedMessages.at(-1);
+    if (restored === undefined) return state;
+    return {
+      ...state,
+      queuedMessages: state.queuedMessages.slice(0, -1),
+      composer: joinDrafts(restored, state.composer),
+      feedback: '已撤回最后一条排队消息',
+    };
+  }
+  if (action.type === 'set_feedback') return { ...state, feedback: action.value };
   const event = action.event;
 
   if (event.type === 'turn_start') {
@@ -50,7 +90,6 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
         phase: 'generating',
         startedAt: event.startedAt,
       }],
-      composer: '',
       activeTurnId: event.turnId,
       streamStatus: 'waiting',
     };
@@ -82,6 +121,7 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
       })),
       activeTurnId: undefined,
       streamStatus: 'idle',
+      queueStatus: event.status === 'completed' || state.queuedMessages.length === 0 ? state.queueStatus : 'paused',
     };
   }
 
@@ -91,6 +131,7 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
       transcript: replaceTurn(state.transcript, index, (turn) => ({ ...turn, phase: 'cancelled', durationMs: event.durationMs })),
       activeTurnId: undefined,
       streamStatus: 'idle',
+      queueStatus: state.queuedMessages.length === 0 ? state.queueStatus : 'paused',
     };
   }
 
@@ -102,10 +143,17 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
       error: event.error,
       durationMs: event.durationMs,
     })),
-    composer: event.restoreInput,
+    composer: joinDrafts(event.restoreInput, state.composer),
     activeTurnId: undefined,
     streamStatus: 'idle',
+    queueStatus: state.queuedMessages.length === 0 ? state.queueStatus : 'paused',
   };
+}
+
+function joinDrafts(first: string, second: string): string {
+  if (first.length === 0) return second;
+  if (second.length === 0) return first;
+  return `${first}\n\n${second}`;
 }
 
 export function selectElapsedMs(state: TuiState, now: number): number | undefined {

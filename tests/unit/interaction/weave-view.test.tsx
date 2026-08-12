@@ -64,4 +64,17 @@ describe('WeaveView', () => {
     const restored = render(<WeaveView {...baseProps} state={state} />).lastFrame() ?? '';
     expect(restored).toContain('保留草稿');
   });
+
+  it('等待首个文本片段时旋转等待符且小狗保持静态', () => {
+    const state = reduceTuiState(initialTuiState(), { type: 'turn_event', event: {
+      type: 'turn_start', turnId: 'waiting', userText: '你好', startedAt: 0,
+    } });
+    const first = render(<WeaveView {...baseProps} state={state} now={0} />).lastFrame() ?? '';
+    const second = render(<WeaveView {...baseProps} state={state} now={100} />).lastFrame() ?? '';
+
+    expect(first).toContain('⠋ 等待响应');
+    expect(second).toContain('⠙ 等待响应');
+    expect(first.match(/\/ \\__/g)).toHaveLength(1);
+    expect(second.match(/\/ \\__/g)).toHaveLength(1);
+  });
 });

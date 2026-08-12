@@ -20,26 +20,35 @@ class TuiFixtureClient implements LlmClient {
 
     if (this.requestCount === 1) {
       await delay(250, request.signal);
-      yield { type: 'text_delta', delta: 'first-chunk' };
-      await delay(700, request.signal);
-      yield { type: 'text_delta', delta: '-second-chunk' };
-      yield { type: 'stream_complete', finishReason: 'stop', usage: { inputTokens: 2, outputTokens: 4 } };
+      yield { type: 'text_delta', delta: '### first-chunk' };
+      await delay(8_000, request.signal);
+      yield { type: 'text_delta', delta: '\n\n**second-chunk**' };
+      yield { type: 'stream_complete', finishReason: 'stop', usage: { inputTokens: 2, outputTokens: 6 } };
       return;
     }
 
     if (this.requestCount === 2) {
-      const historyIsComplete = request.messages.length === 3
+      const queueIsMerged = request.messages.length === 3
         && request.messages[0]?.content === 'first-question'
-        && request.messages[1]?.content === 'first-chunk-second-chunk'
-        && request.messages[2]?.content === 'line-one\nline-two';
-      yield { type: 'text_delta', delta: historyIsComplete ? 'history-ok\n' : 'history-missing\n' };
-      await delay(700, request.signal);
-      yield { type: 'text_delta', delta: Array.from({ length: 32 }, (_, index) => `long-line-${String(index + 1).padStart(2, '0')}`).join('\n') };
-      yield { type: 'stream_complete', finishReason: 'stop', usage: { inputTokens: 9, outputTokens: 40 } };
+        && request.messages[1]?.content === '### first-chunk\n\n**second-chunk**'
+        && request.messages[2]?.content === 'queued-one\n\nqueued-two';
+      yield { type: 'text_delta', delta: queueIsMerged ? '### queue-ok\n\n' : '### queue-missing\n\n' };
+      yield { type: 'text_delta', delta: '| 名称 | 说明 |\n| --- | --- |\n| Weave | 终端助手 |\n\n```ts\nconst longName = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz";\n```\n' };
+      yield { type: 'stream_complete', finishReason: 'stop', usage: { inputTokens: 9, outputTokens: 24 } };
       return;
     }
 
     if (this.requestCount === 3) {
+      const historyIsComplete = request.messages.length === 5
+        && request.messages[4]?.content === 'line-one\nline-two';
+      yield { type: 'text_delta', delta: historyIsComplete ? 'history-ok\n' : 'history-missing\n' };
+      await delay(700, request.signal);
+      yield { type: 'text_delta', delta: `${Array.from({ length: 32 }, (_, index) => `long-line-${String(index + 1).padStart(2, '0')}`).join('\n')}\n${historyIsComplete ? 'history-ok-tail' : 'history-missing-tail'}` };
+      yield { type: 'stream_complete', finishReason: 'stop', usage: { inputTokens: 9, outputTokens: 40 } };
+      return;
+    }
+
+    if (this.requestCount === 4) {
       yield { type: 'text_delta', delta: 'cancel-partial' };
       try {
         await delay(30_000, request.signal);
@@ -47,6 +56,13 @@ class TuiFixtureClient implements LlmClient {
         return;
       }
       yield { type: 'text_delta', delta: 'late-event-must-not-render' };
+      yield { type: 'stream_complete', finishReason: 'stop' };
+      return;
+    }
+
+    if (this.requestCount === 5) {
+      const resumed = request.messages.at(-1)?.content === 'after-cancel';
+      yield { type: 'text_delta', delta: resumed ? 'resume-ok' : 'resume-missing' };
       yield { type: 'stream_complete', finishReason: 'stop' };
       return;
     }
