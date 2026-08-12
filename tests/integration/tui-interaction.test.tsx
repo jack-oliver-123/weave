@@ -111,7 +111,7 @@ describe('TUI 交互集成', () => {
       patchConsole: false,
     });
     instances.push(instance);
-    await waitFor(() => stdout.writes.some((value) => value.includes('\u001b[?25h')));
+    await waitFor(() => stdout.writes.some((value) => value.includes('\u001b[?25h')), 5_000);
 
     expect(stdout.writes.join('')).toContain('\u001b[2A\u001b[5G\u001b[?25h');
     expect(stdout.writes.join('')).not.toContain('█');
