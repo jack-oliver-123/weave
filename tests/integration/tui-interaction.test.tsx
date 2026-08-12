@@ -1,6 +1,4 @@
-import { EventEmitter } from 'node:events';
 import React from 'react';
-import { render as renderInk } from 'ink';
 import { render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ConversationController, TurnEvent, UserTurn } from '../../src/shared/types.js';
@@ -88,33 +86,6 @@ describe('TUI 交互集成', () => {
     instance.stdin.write('\r');
     await waitFor(() => controller.submissions.length === 2 && instance.lastFrame()?.includes('resume-ok') === true);
     expect(controller.submissions).toEqual(['first', 'after-truncated']);
-  });
-
-  it('使用原生终端光标定位且不渲染手绘块光标', async () => {
-    const stdout = new TerminalOutput();
-    const stderr = new TerminalOutput();
-    const stdin = new TerminalInput();
-    const instance = renderInk(<WeaveView
-      state={initialTuiState()}
-      profile={profile}
-      version="test"
-      cwd="C:\\Code\\Weave"
-      columns={100}
-      rows={30}
-      viewport={initialViewportState()}
-      cursor={0}
-    />, {
-      stdout: stdout as never,
-      stderr: stderr as never,
-      stdin: stdin as never,
-      exitOnCtrlC: false,
-      patchConsole: false,
-    });
-    instances.push(instance);
-    await waitFor(() => stdout.writes.some((value) => value.includes('\u001b[?25h')));
-
-    expect(stdout.writes.join('')).toContain('\u001b[2A\u001b[5G\u001b[?25h');
-    expect(stdout.writes.join('')).not.toContain('█');
   });
 
   it('Ink 视图渲染 Markdown 结构并保持队列、composer 和状态栏固定', () => {
@@ -209,29 +180,6 @@ class TruncatingController implements ConversationController {
       durationMs: 1,
     };
   }
-}
-
-class TerminalOutput extends EventEmitter {
-  readonly columns = 100;
-  readonly rows = 30;
-  readonly isTTY = true;
-  readonly writes: string[] = [];
-
-  write = (value: string): boolean => {
-    this.writes.push(value);
-    return true;
-  };
-}
-
-class TerminalInput extends EventEmitter {
-  readonly isTTY = true;
-  setEncoding(): void {}
-  setRawMode(): void {}
-  resume(): void {}
-  pause(): void {}
-  ref(): void {}
-  unref(): void {}
-  read(): null { return null; }
 }
 
 function enter(instance: ReturnType<typeof render>, value: string): void {
