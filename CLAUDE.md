@@ -127,28 +127,28 @@ Weave 是一个分层架构的 CodingAgent，设计原则：**每层只管自己
 
 ## 开发约定
 
-- 语言：TypeScript (Node.js)
-- 包管理：npm / pnpm
-- 构建：tsc，目标 ES2022+
-- 测试：每层有独立的单元测试，跨层行为用集成测试覆盖
 - 代码注释：只在 WHY 非显而易见时添加，不写 WHAT
 - 提交：功能性变更一个 commit，不在 PR 里混入无关清理
 
 ---
 
-## 目录结构（规划）
+## 常用命令
 
-```
-src/
-  interaction/   # 交互层
-  engine/        # 引擎层
-  tool/          # 工具层
-  memory/        # 记忆层
-  security/      # 安全层
-  shared/        # 跨层共享类型定义（接口契约）
-tests/
-  unit/
-  integration/
-```
+- `npm run dev` — 以 tsx 直接跑 `src/main.ts`（无需先 build）
+- `npm run typecheck` — `tsc --noEmit`，提交前必跑的类型门禁
+- `npm test` — **先**跑 `tests/ci/workflow-contract.mjs`（工作流契约门禁），**再**跑 vitest；两条都要过
+- `npm run test:unit` / `test:integration` / `test:tui` — 按层切分的 vitest 入口
+- `npm run spec:validate` — `openspec validate --all --strict --no-interactive`，改 `openspec/` 后必跑
+- ESM：`"type": "module"` + `NodeNext`，import 必须带扩展名 `.js`（即使源是 `.ts`）
+
+---
+
+## 约定提醒
+
+- `AGENTS.md` 是占位文件，只写了 "CLAUDE.md" 一行 —— 规范以 `CLAUDE.md` 为准，别被它的存在误导
+- `openspec/changes/` 有进行中的变更；改动后跑 `npm run spec:validate` 校验（见上）
+- `.weave/`、`.e2e-dist/`、`dist/` 是运行/构建产物，不要手工编辑或提交
+
+---
 
 `shared/` 中只放接口类型和常量，任何层都可以依赖它，但它不依赖任何层。
