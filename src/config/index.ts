@@ -17,8 +17,10 @@ const PROFILE_KEYS = new Set([
   'api_key',
   'thinking',
   'max_tokens',
+  'tools',
 ]);
-const ROOT_KEYS = new Set(['default_profile', 'profiles']);
+const ROOT_KEYS = new Set(['default_profile', 'profiles', 'tools']);
+const TOOL_KEYS = new Set(['enabled']);
 const ENV_REFERENCE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
 const FULL_ENDPOINT_PATH = /\/(?:v\d+\/)?(?:messages|chat\/completions|responses)\/?$/i;
 
@@ -27,6 +29,7 @@ export interface ResolvedProfile extends ProfileSummary {
   readonly apiKey: string;
   readonly thinking: false;
   readonly maxTokens: number;
+  readonly toolsEnabled?: boolean;
 }
 
 export interface LoadedConfig {
@@ -34,6 +37,7 @@ export interface LoadedConfig {
   readonly defaultProfile: string;
   readonly profiles: readonly ResolvedProfile[];
   readonly selected: ResolvedProfile;
+  readonly toolsEnabled: boolean;
 }
 
 export interface LoadConfigOptions {
@@ -41,6 +45,7 @@ export interface LoadConfigOptions {
   readonly profileName?: string;
   readonly homeDirectory?: string;
   readonly environment?: Readonly<Record<string, string | undefined>>;
+  readonly toolsEnabled?: boolean;
 }
 
 export class ConfigError extends Error {
@@ -80,6 +85,7 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Loade
 
   const root = requireRecord(document, '配置根节点', undefined, path);
   rejectUnknownKeys(root, ROOT_KEYS, '配置根节点', path);
+  const rootToolsEnabled = parseTools(root.tools, 'tools', path);
   const defaultProfile = requireString(root.default_profile, 'default_profile', path);
   if (!Array.isArray(root.profiles) || root.profiles.length === 0) {
     throw new ConfigError('profiles 必须是非空列表', 'profiles', path);
@@ -101,7 +107,8 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Loade
     throw new ConfigError(`未找到 profile：${selectedName}`, 'profile', path);
   }
 
-  return { path, defaultProfile, profiles, selected };
+  const toolsEnabled = options.toolsEnabled ?? selected.toolsEnabled ?? rootToolsEnabled ?? true;
+  return { path, defaultProfile, profiles, selected, toolsEnabled };
 }
 
 function parseProfile(
@@ -157,7 +164,20 @@ function parseProfile(
     apiKey,
     thinking: false,
     maxTokens: maxTokens as number,
+    ...(parseTools(profile.tools, `${prefix}.tools`, path) === undefined
+      ? {}
+      : { toolsEnabled: parseTools(profile.tools, `${prefix}.tools`, path) }),
   };
+}
+
+function parseTools(value: unknown, field: string, path: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  const tools = requireRecord(value, field, field, path);
+  rejectUnknownKeys(tools, TOOL_KEYS, field, path);
+  if (typeof tools.enabled !== 'boolean') {
+    throw new ConfigError(`${field}.enabled 必须是布尔值`, `${field}.enabled`, path);
+  }
+  return tools.enabled;
 }
 
 function validateBaseUrl(value: string, field: string, path: string): string {

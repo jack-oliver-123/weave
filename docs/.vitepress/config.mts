@@ -7,6 +7,7 @@ const activeItems = [
 
 const archivedItems = [
   { text: "improve-terminal-chat-experience", link: "/changes/archive/2026-08-12-improve-terminal-chat-experience/" },
+  { text: "add-core-tool-system", link: "/changes/archive/2026-08-12-add-core-tool-system/" },
   { text: "add-ci-quality-gates", link: "/changes/archive/2026-08-12-add-ci-quality-gates/" },
   { text: "add-multi-protocol-llm-tui-chat", link: "/changes/archive/2026-08-11-add-multi-protocol-llm-tui-chat/" },
   { text: "scaffold-project-skeleton", link: "/changes/archive/2026-08-10-scaffold-project-skeleton/" },
@@ -29,7 +30,16 @@ export default defineConfig({
         { text: "已归档", collapsed: true, items: archivedItems }
       ]
     },
-    search: { provider: "local" },
+    search: {
+      provider: "local",
+      options: {
+        _render(src, env, md) {
+          if (env.relativePath.startsWith("openspec/")) return "";
+          const html = md.render(src, env);
+          return env.frontmatter?.search === false ? "" : html;
+        }
+      }
+    },
     outline: { level: [2, 3], label: "本页目录" },
     docFooter: { prev: "上一页", next: "下一页" },
     sidebarMenuLabel: "目录",

@@ -78,6 +78,51 @@ describe('OpenAIResponsesClient', () => {
     ]);
   });
 
+  it('组装 function call item、参数 delta 与 call_id', async () => {
+    let nextId = 0;
+    const client = new OpenAIResponsesClient(profile, {
+      createCallId: () => `internal-${++nextId}`,
+      transport: async () => nativeStream([
+        { type: 'response.created', response: {} },
+        { type: 'response.output_text.delta', delta: '先检查。' },
+        { type: 'response.output_item.added', item: { type: 'function_call', id: 'item-1', call_id: 'call-1', name: 'read_file', arguments: '' } },
+        { type: 'response.function_call_arguments.delta', item_id: 'item-1', delta: '{"path":' },
+        { type: 'response.function_call_arguments.delta', item_id: 'item-1', delta: '"a.txt"}' },
+        { type: 'response.function_call_arguments.done', item_id: 'item-1', arguments: '{"path":"a.txt"}' },
+        { type: 'response.output_item.done', item: { type: 'function_call', id: 'item-1', call_id: 'call-1', name: 'read_file', arguments: '{"path":"a.txt"}' } },
+        { type: 'response.completed', response: {} },
+      ]),
+    });
+    await expect(collect(client.stream(request()))).resolves.toEqual([
+      { type: 'stream_start' },
+      { type: 'text_delta', delta: '先检查。' },
+      { type: 'tool_calls', calls: [{ callId: 'internal-1', providerCallId: 'call-1', name: 'read_file', input: { path: 'a.txt' } }] },
+      { type: 'stream_complete', finishReason: 'stop' },
+    ]);
+  });
+
+  it.each([
+    ['重复 call_id', [
+      { type: 'response.created', response: {} },
+      { type: 'response.output_item.added', item: { type: 'function_call', id: 'item-1', call_id: 'dup', name: 'read_file' } },
+      { type: 'response.output_item.added', item: { type: 'function_call', id: 'item-2', call_id: 'dup', name: 'grep' } },
+    ]],
+    ['参数超过 64 KiB', [
+      { type: 'response.created', response: {} },
+      { type: 'response.output_item.added', item: { type: 'function_call', id: 'item-large', call_id: 'large', name: 'read_file' } },
+      { type: 'response.function_call_arguments.delta', item_id: 'item-large', delta: 'x'.repeat(64 * 1024 + 1) },
+    ]],
+    ['item 未闭合', [
+      { type: 'response.created', response: {} },
+      { type: 'response.output_item.added', item: { type: 'function_call', id: 'item-open', call_id: 'open', name: 'read_file' } },
+      { type: 'response.completed', response: {} },
+    ]],
+  ])('%s 不输出工具调用并返回协议错误', async (_name, events) => {
+    const result = await collect(new OpenAIResponsesClient(profile, { transport: async () => nativeStream(events) }).stream(request()));
+    expect(result.some((event) => event.type === 'tool_calls')).toBe(false);
+    expect(result.at(-1)).toMatchObject({ type: 'stream_error', error: { code: 'PROTOCOL_ERROR' } });
+  });
+
   it.each([
     ['错误事件', [{ type: 'response.created', response: {} }, { type: 'error', code: 'server_error', message: 'secret' }], 'PROVIDER_ERROR'],
     ['失败终态', [{ type: 'response.created', response: {} }, { type: 'response.failed', response: {} }], 'PROVIDER_ERROR'],

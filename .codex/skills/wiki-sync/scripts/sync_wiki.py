@@ -64,6 +64,13 @@ REQUIREMENT_EVOLUTIONS: dict[tuple[str, str], tuple[str, str]] = {
         "diagnosis-case-knowledge",
         "Save completed diagnostic as user-scoped knowledge case",
     ),
+    (
+        "conversation-management",
+        "仅提交有效轮次到模型历史",
+    ): (
+        "conversation-management",
+        "增量提交可关联的 Agent Loop 历史",
+    ),
 }
 
 
@@ -443,7 +450,16 @@ export default defineConfig({
         { text: "已归档", collapsed: true, items: archivedItems }
       ]
     },
-    search: { provider: "local" },
+    search: {
+      provider: "local",
+      options: {
+        _render(src, env, md) {
+          if (env.relativePath.startsWith("openspec/")) return "";
+          const html = md.render(src, env);
+          return env.frontmatter?.search === false ? "" : html;
+        }
+      }
+    },
     outline: { level: [2, 3], label: "本页目录" },
     docFooter: { prev: "上一页", next: "下一页" },
     sidebarMenuLabel: "目录",

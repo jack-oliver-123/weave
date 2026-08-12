@@ -11,9 +11,54 @@ export interface ProfileSummary {
   readonly model: string;
 }
 
+export type JsonSchema = Readonly<Record<string, unknown>>;
+export type ToolExecutionMode = 'read_shared' | 'write_exclusive';
+
+export interface ToolDefinition {
+  readonly name: string;
+  readonly purpose: string;
+  readonly useWhen: readonly string[];
+  readonly avoidWhen: readonly string[];
+  readonly inputSchema: JsonSchema;
+  readonly resultSchema: JsonSchema;
+  readonly worksWith: readonly { readonly toolName: string; readonly usage: string }[];
+  readonly executionMode: ToolExecutionMode;
+}
+
+export interface ToolCallRequest {
+  readonly callId: string;
+  readonly providerCallId: string;
+  readonly name: string;
+  readonly input: unknown;
+}
+
+export interface ToolErrorContent {
+  readonly code: string;
+  readonly message: string;
+  readonly retryable: boolean;
+  readonly details?: Readonly<Record<string, unknown>>;
+}
+
+export interface ToolCallResult {
+  readonly callId: string;
+  readonly providerCallId: string;
+  readonly toolName: string;
+  readonly isError: boolean;
+  readonly content: {
+    readonly summary: string;
+    readonly data?: unknown;
+    readonly error?: ToolErrorContent;
+  };
+}
+
+export type MessageContent =
+  | { readonly type: 'text'; readonly text: string }
+  | { readonly type: 'tool_call'; readonly call: ToolCallRequest }
+  | { readonly type: 'tool_result'; readonly result: ToolCallResult };
+
 export interface ChatMessage {
-  readonly role: 'user' | 'assistant';
-  readonly content: string;
+  readonly role: 'user' | 'assistant' | 'tool';
+  readonly content: string | readonly MessageContent[];
 }
 
 export interface UserTurn {
@@ -43,11 +88,14 @@ export interface LlmRequest {
   readonly messages: readonly ChatMessage[];
   readonly maxTokens: number;
   readonly signal: AbortSignal;
+  readonly tools?: readonly ToolDefinition[];
+  readonly systemPrompt?: string;
 }
 
 export type LlmStreamEvent =
   | { readonly type: 'stream_start' }
   | { readonly type: 'text_delta'; readonly delta: string }
+  | { readonly type: 'tool_calls'; readonly calls: readonly ToolCallRequest[] }
   | {
       readonly type: 'stream_complete';
       readonly finishReason: FinishReason;
@@ -62,6 +110,7 @@ export interface LlmClient {
 
 export interface ConversationStore {
   getMessages(): readonly ChatMessage[];
+  appendMessages(messages: readonly ChatMessage[]): void;
   commitTurn(user: ChatMessage, assistant: ChatMessage): void;
 }
 
@@ -82,6 +131,9 @@ export type TurnEvent =
       readonly finishReason: FinishReason;
       readonly usage?: TokenUsage;
       readonly durationMs: number;
+      readonly modelTurnCount?: number;
+      readonly toolCallCount?: number;
+      readonly toolErrorCount?: number;
     }
   | {
       readonly type: 'turn_cancelled';
@@ -94,6 +146,22 @@ export type TurnEvent =
       readonly error: SafeError;
       readonly restoreInput: string;
       readonly durationMs: number;
+    }
+  | {
+      readonly type: 'tool_call_queued' | 'tool_call_start';
+      readonly turnId: string;
+      readonly callId: string;
+      readonly toolName: string;
+      readonly summary: string;
+    }
+  | {
+      readonly type: 'tool_call_complete' | 'tool_call_skipped';
+      readonly turnId: string;
+      readonly callId: string;
+      readonly toolName: string;
+      readonly summary: string;
+      readonly isError: boolean;
+      readonly error?: ToolErrorContent;
     };
 
 export type AgentEvent = TurnEvent;
@@ -102,19 +170,6 @@ export interface ConversationController {
   readonly activeTurnId: string | undefined;
   submit(turn: UserTurn): AsyncIterable<TurnEvent>;
   cancel(): void;
-}
-
-// Reserved skeleton contracts for later tool, memory and security changes.
-export interface ToolCallRequest {
-  readonly id: string;
-  readonly name: string;
-  readonly input: unknown;
-}
-
-export interface ToolCallResult {
-  readonly id: string;
-  readonly content: string;
-  readonly isError?: boolean;
 }
 
 export interface ContextSnapshot {

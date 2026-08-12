@@ -61,6 +61,46 @@ describe('TUI reducer', () => {
     expect(state.transcript[0]?.assistantText).toBe('');
   });
 
+  it('按 callId 保持工具顺序并原位更新等待、执行、成功、失败与跳过状态', () => {
+    let state = reduceTuiState(initialTuiState(), { type: 'turn_event', event: start });
+    state = reduceTuiState(state, { type: 'turn_event', event: {
+      type: 'tool_call_queued', turnId: 't1', callId: 'c1', toolName: 'read_file', summary: '等待读取',
+    } });
+    state = reduceTuiState(state, { type: 'turn_event', event: {
+      type: 'tool_call_queued', turnId: 't1', callId: 'c2', toolName: 'edit_file', summary: '等待编辑',
+    } });
+    state = reduceTuiState(state, { type: 'turn_event', event: {
+      type: 'tool_call_start', turnId: 't1', callId: 'c1', toolName: 'read_file', summary: '正在读取',
+    } });
+    state = reduceTuiState(state, { type: 'turn_event', event: {
+      type: 'tool_call_complete', turnId: 't1', callId: 'c1', toolName: 'read_file', summary: '读取完成', isError: false,
+    } });
+    state = reduceTuiState(state, { type: 'turn_event', event: {
+      type: 'tool_call_skipped', turnId: 't1', callId: 'c2', toolName: 'edit_file', summary: '前序失败', isError: true,
+      error: { code: 'PRIOR_WRITE_FAILED', message: '未执行', retryable: false },
+    } });
+    expect(state.transcript[0]?.activities).toEqual([
+      { type: 'tool', callId: 'c1', toolName: 'read_file', status: 'success', summary: '读取完成' },
+      { type: 'tool', callId: 'c2', toolName: 'edit_file', status: 'skipped', summary: '前序失败', errorCode: 'PRIOR_WRITE_FAILED', errorMessage: '未执行' },
+    ]);
+  });
+
+  it('在工具活动前后保留模型文本的真实显示顺序并保存完成统计', () => {
+    let state = reduceTuiState(initialTuiState(), { type: 'turn_event', event: start });
+    state = reduceTuiState(state, { type: 'turn_event', event: { type: 'text_delta', turnId: 't1', delta: '先检查' } });
+    state = reduceTuiState(state, { type: 'turn_event', event: {
+      type: 'tool_call_queued', turnId: 't1', callId: 'c1', toolName: 'grep', summary: '等待搜索',
+    } });
+    state = reduceTuiState(state, { type: 'turn_event', event: { type: 'text_delta', turnId: 't1', delta: '最终回答' } });
+    state = reduceTuiState(state, { type: 'turn_event', event: {
+      type: 'turn_complete', turnId: 't1', status: 'completed', finishReason: 'stop', durationMs: 10,
+      modelTurnCount: 2, toolCallCount: 1, toolErrorCount: 0,
+    } });
+    expect(state.transcript[0]?.activities.map((activity) => activity.type === 'text' ? activity.text : activity.toolName))
+      .toEqual(['先检查', 'grep', '最终回答']);
+    expect(state.transcript[0]).toMatchObject({ modelTurnCount: 2, toolCallCount: 1, toolErrorCount: 0 });
+  });
+
   it('单调计算生成耗时且不估算费用或上下文比例', () => {
     const state = reduceTuiState(initialTuiState(), { type: 'turn_event', event: start });
     expect(selectElapsedMs(state, 80)).toBe(0);

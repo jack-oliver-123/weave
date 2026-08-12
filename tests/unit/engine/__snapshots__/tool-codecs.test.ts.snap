@@ -1,0 +1,110 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`tool protocol codecs > 从同一中立定义生成三种等价工具定义与 auto 选择 1`] = `
+{
+  "messages": [],
+  "systemPrompt": "原则",
+  "toolChoice": {
+    "type": "auto",
+  },
+  "tools": [
+    {
+      "description": "用途：读取工作区文本文件。
+适用场景：
+- 需要查看文件内容。
+不适用场景：
+- 需要修改文件。
+参数约束：{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}
+返回格式：统一结果信封包含 isError、summary、data 或 error；成功 data 结构为 {"type":"object","properties":{"content":{"type":"string"}},"additionalProperties":false}
+工具配合：- grep：先搜索再读取。",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+          },
+        },
+        "required": [
+          "path",
+        ],
+        "type": "object",
+      },
+      "name": "read_file",
+    },
+  ],
+}
+`;
+
+exports[`tool protocol codecs > 从同一中立定义生成三种等价工具定义与 auto 选择 2`] = `
+{
+  "messages": [
+    {
+      "content": "原则",
+      "role": "system",
+    },
+  ],
+  "toolChoice": "auto",
+  "tools": [
+    {
+      "function": {
+        "description": "用途：读取工作区文本文件。
+适用场景：
+- 需要查看文件内容。
+不适用场景：
+- 需要修改文件。
+参数约束：{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}
+返回格式：统一结果信封包含 isError、summary、data 或 error；成功 data 结构为 {"type":"object","properties":{"content":{"type":"string"}},"additionalProperties":false}
+工具配合：- grep：先搜索再读取。",
+        "name": "read_file",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "path",
+          ],
+          "type": "object",
+        },
+      },
+      "type": "function",
+    },
+  ],
+}
+`;
+
+exports[`tool protocol codecs > 从同一中立定义生成三种等价工具定义与 auto 选择 3`] = `
+{
+  "messages": [],
+  "systemPrompt": "原则",
+  "toolChoice": "auto",
+  "tools": [
+    {
+      "description": "用途：读取工作区文本文件。
+适用场景：
+- 需要查看文件内容。
+不适用场景：
+- 需要修改文件。
+参数约束：{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}
+返回格式：统一结果信封包含 isError、summary、data 或 error；成功 data 结构为 {"type":"object","properties":{"content":{"type":"string"}},"additionalProperties":false}
+工具配合：- grep：先搜索再读取。",
+      "name": "read_file",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+          },
+        },
+        "required": [
+          "path",
+        ],
+        "type": "object",
+      },
+      "type": "function",
+    },
+  ],
+}
+`;

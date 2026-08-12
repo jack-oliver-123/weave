@@ -17,7 +17,19 @@ export interface TranscriptTurn {
   readonly durationMs?: number;
   readonly usage?: TokenUsage;
   readonly error?: SafeError;
+  readonly activities: readonly TranscriptActivity[];
+  readonly modelTurnCount?: number;
+  readonly toolCallCount?: number;
+  readonly toolErrorCount?: number;
 }
+
+export type TranscriptActivity =
+  | { readonly type: 'text'; readonly text: string }
+  | {
+      readonly type: 'tool'; readonly callId: string; readonly toolName: string;
+      readonly status: 'queued' | 'running' | 'success' | 'error' | 'skipped';
+      readonly summary: string; readonly errorCode?: string; readonly errorMessage?: string;
+    };
 
 export interface TuiState {
   readonly transcript: readonly TranscriptTurn[];
@@ -89,6 +101,7 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
         assistantText: '',
         phase: 'generating',
         startedAt: event.startedAt,
+        activities: [],
       }],
       activeTurnId: event.turnId,
       streamStatus: 'waiting',
@@ -99,12 +112,29 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
   const index = state.transcript.findIndex((turn) => turn.turnId === event.turnId);
   if (index < 0) return state;
 
+  if (
+    event.type === 'tool_call_queued'
+    || event.type === 'tool_call_start'
+    || event.type === 'tool_call_complete'
+    || event.type === 'tool_call_skipped'
+  ) {
+    return {
+      ...state,
+      transcript: replaceTurn(state.transcript, index, (turn) => ({
+        ...turn,
+        activities: updateToolActivity(turn.activities, event),
+      })),
+      streamStatus: 'streaming',
+    };
+  }
+
   if (event.type === 'text_delta') {
     return {
       ...state,
       transcript: replaceTurn(state.transcript, index, (turn) => ({
         ...turn,
         assistantText: turn.assistantText + event.delta,
+        activities: appendTextActivity(turn.activities, event.delta),
       })),
       streamStatus: 'streaming',
     };
@@ -118,6 +148,9 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
         phase: event.status,
         durationMs: event.durationMs,
         ...(event.usage === undefined ? {} : { usage: event.usage }),
+        ...(event.modelTurnCount === undefined ? {} : { modelTurnCount: event.modelTurnCount }),
+        ...(event.toolCallCount === undefined ? {} : { toolCallCount: event.toolCallCount }),
+        ...(event.toolErrorCount === undefined ? {} : { toolErrorCount: event.toolErrorCount }),
       })),
       activeTurnId: undefined,
       streamStatus: 'idle',
@@ -135,6 +168,8 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
     };
   }
 
+  if (event.type !== 'turn_error') return state;
+
   return {
     ...state,
     transcript: replaceTurn(state.transcript, index, (turn) => ({
@@ -148,6 +183,30 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
     streamStatus: 'idle',
     queueStatus: state.queuedMessages.length === 0 ? state.queueStatus : 'paused',
   };
+}
+
+function appendTextActivity(activities: readonly TranscriptActivity[], delta: string): readonly TranscriptActivity[] {
+  const last = activities.at(-1);
+  if (last?.type === 'text') return [...activities.slice(0, -1), { type: 'text', text: last.text + delta }];
+  return [...activities, { type: 'text', text: delta }];
+}
+
+function updateToolActivity(
+  activities: readonly TranscriptActivity[],
+  event: Extract<TurnEvent, { type: 'tool_call_queued' | 'tool_call_start' | 'tool_call_complete' | 'tool_call_skipped' }>,
+): readonly TranscriptActivity[] {
+  const status = event.type === 'tool_call_queued' ? 'queued'
+    : event.type === 'tool_call_start' ? 'running'
+      : event.type === 'tool_call_skipped' ? 'skipped'
+        : 'isError' in event && event.isError ? 'error' : 'success';
+  const activity: TranscriptActivity = {
+    type: 'tool', callId: event.callId, toolName: event.toolName, status,
+    summary: event.summary,
+    ...('error' in event && event.error !== undefined ? { errorCode: event.error.code, errorMessage: event.error.message } : {}),
+  };
+  const index = activities.findIndex((item) => item.type === 'tool' && item.callId === event.callId);
+  if (index < 0) return [...activities, activity];
+  return activities.map((item, candidate) => candidate === index ? activity : item);
 }
 
 function joinDrafts(first: string, second: string): string {

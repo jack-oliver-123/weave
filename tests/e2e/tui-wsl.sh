@@ -93,6 +93,12 @@ scrolled="$(capture)"
 send_literal $'\e[1;5F'
 wait_text 'long-line-32' >/dev/null
 
+send_literal 'tool-status'; send_key Enter
+tool_pane="$(wait_text '完成 · 2 回合 · 2 工具 · 1 错误')"
+[[ "$tool_pane" == *'read_file'* ]]
+[[ "$tool_pane" == *'PRIOR_WRITE_FAILED'* ]]
+[[ "$(grep -Fo 'Weave ve2e' <<<"$tool_pane" | wc -l)" -eq 1 ]]
+
 run_tmux resize-window -t "$SESSION" -x 79 -y 23
 wait_text '终端窗口过小' >/dev/null
 run_tmux resize-window -t "$SESSION" -x 100 -y 30

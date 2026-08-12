@@ -99,18 +99,24 @@ export function formatTranscript(turns: readonly TranscriptTurn[], width = 78, n
       [{ text: '  ' }],
     ));
 
-    if (turn.assistantText.length > 0) {
-      const answerRows = renderMarkdown(turn.assistantText, {
-        width: Math.max(1, width - 2),
-        final: turn.phase !== 'generating',
-        keyPrefix: `${turn.turnId}:assistant`,
+    if (turn.activities.length > 0) {
+      turn.activities.forEach((activity, activityIndex) => {
+        if (activity.type === 'tool') {
+          rows.push({
+            key: `${turn.turnId}:tool:${activity.callId}`,
+            spans: [{ text: `  ${toolMarker(activity.status)} ${activity.toolName} · ${toolSummary(activity)}`, style: toolStyle(activity.status) }],
+          });
+          return;
+        }
+        const answerRows = renderMarkdown(activity.text, {
+          width: Math.max(1, width - 2), final: turn.phase !== 'generating',
+          keyPrefix: `${turn.turnId}:assistant:${activityIndex}`,
+        });
+        rows.push(...prefixRows(answerRows, [{ text: '● ', style: { color: 'cyan' } }], [{ text: '  ' }], `${turn.turnId}:answer:${activityIndex}`));
       });
-      rows.push(...prefixRows(
-        answerRows,
-        [{ text: '● ', style: { color: 'cyan' } }],
-        [{ text: '  ' }],
-        `${turn.turnId}:answer`,
-      ));
+    } else if (turn.assistantText.length > 0) {
+      const answerRows = renderMarkdown(turn.assistantText, { width: Math.max(1, width - 2), final: turn.phase !== 'generating', keyPrefix: `${turn.turnId}:assistant` });
+      rows.push(...prefixRows(answerRows, [{ text: '● ', style: { color: 'cyan' } }], [{ text: '  ' }], `${turn.turnId}:answer`));
     } else {
       rows.push({
         key: `${turn.turnId}:waiting`,
@@ -121,12 +127,37 @@ export function formatTranscript(turns: readonly TranscriptTurn[], width = 78, n
     if (turn.phase !== 'generating') {
       rows.push({
         key: `${turn.turnId}:status`,
-        spans: [{ text: `  ${turnLabel(turn)}${formatDurationSuffix(turn.durationMs)}`, style: { dimColor: true } }],
+        spans: [{ text: `  ${turnLabel(turn)}${formatStats(turn)}${formatDurationSuffix(turn.durationMs)}`, style: { dimColor: true } }],
       });
     }
     rows.push({ key: `${turn.turnId}:blank`, spans: [{ text: '' }] });
   }
   return rows;
+}
+
+function toolMarker(status: Extract<TranscriptTurn['activities'][number], { type: 'tool' }>['status']): string {
+  if (status === 'queued') return '○';
+  if (status === 'running') return '◐';
+  if (status === 'success') return '✓';
+  if (status === 'skipped') return '↷';
+  return '×';
+}
+
+function toolSummary(activity: Extract<TranscriptTurn['activities'][number], { type: 'tool' }>): string {
+  if (activity.errorCode !== undefined) return `${activity.summary} (${activity.errorCode})`;
+  return activity.summary;
+}
+
+function toolStyle(status: Extract<TranscriptTurn['activities'][number], { type: 'tool' }>['status']): StyledSpan['style'] {
+  if (status === 'success') return { color: 'green' };
+  if (status === 'error') return { color: 'red' };
+  if (status === 'skipped') return { color: 'yellow' };
+  return { dimColor: true };
+}
+
+function formatStats(turn: TranscriptTurn): string {
+  if (turn.modelTurnCount === undefined) return '';
+  return ` · ${turn.modelTurnCount} 回合 · ${turn.toolCallCount ?? 0} 工具${(turn.toolErrorCount ?? 0) > 0 ? ` · ${turn.toolErrorCount} 错误` : ''}`;
 }
 
 function spinnerFrame(now: number): string {

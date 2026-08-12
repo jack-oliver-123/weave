@@ -126,4 +126,23 @@ describe('loadConfig', () => {
     expect(thrown).toBeInstanceOf(ConfigError);
     expect(String(thrown)).not.toContain(secret);
   });
+
+  it('resolves tools.enabled using profile, root, CLI and default precedence', async () => {
+    const defaults = await loadConfig({ configPath: await writeConfig(validConfig()) });
+    expect(defaults.toolsEnabled).toBe(true);
+
+    const root = await loadConfig({ configPath: await writeConfig(`tools:\n  enabled: false\n${validConfig()}`) });
+    expect(root.toolsEnabled).toBe(false);
+
+    const profilePath = await writeConfig(`tools:\n  enabled: false\n${validConfig('    tools:\n      enabled: true\n')}`);
+    expect((await loadConfig({ configPath: profilePath })).toolsEnabled).toBe(true);
+    expect((await loadConfig({ configPath: profilePath, toolsEnabled: false })).toolsEnabled).toBe(false);
+  });
+
+  it.each([
+    ['root unknown', `tools:\n  enabled: true\n  timeout: 1\n${validConfig()}`, 'tools.timeout'],
+    ['profile non-boolean', validConfig('    tools:\n      enabled: yes\n'), 'profiles[0].tools.enabled'],
+  ])('rejects invalid tools config: %s', async (_name, content, field) => {
+    await expect(loadConfig({ configPath: await writeConfig(content) })).rejects.toMatchObject({ field });
+  });
 });
