@@ -28,7 +28,7 @@
 
 ## 5. 远程 CI 与仓库门禁
 
-- [ ] 5.1 在获得提交和推送授权后，以明确路径暂存本变更、提交并推送功能分支；在单独获得 PR 创建授权后创建指向 `main` 的 Pull Request
+- [x] 5.1 在获得提交和推送授权后，以明确路径暂存本变更、提交并推送功能分支；在单独获得 PR 创建授权后创建指向 `main` 的 Pull Request
 - [ ] 5.2 验证 Pull Request 最新 head 上 `Code Quality`、`Tests`、`Docs & OpenSpec` 与 `CI Gate` 的真实 GitHub Actions 结果，并确认同一 PR 的旧运行会被新提交取消
 - [ ] 5.3 在获得远端仓库配置授权后，只保留 squash merge、禁用 merge commit 与 rebase merge、启用合并后自动删除来源分支，并保持 Merge Queue 关闭
 - [ ] 5.4 配置无绕过主体的 `main` 规则，要求 Pull Request、最新 `main` 上成功的 `CI Gate` 和全部 Review 对话已解决，审批人数设为 0，并禁止直接推送、强推和删除
