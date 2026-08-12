@@ -29,8 +29,8 @@
 ## 5. 远程 CI 与仓库门禁
 
 - [x] 5.1 在获得提交和推送授权后，以明确路径暂存本变更、提交并推送功能分支；在单独获得 PR 创建授权后创建指向 `main` 的 Pull Request
-- [ ] 5.2 验证 Pull Request 最新 head 上 `Code Quality`、`Tests`、`Docs & OpenSpec` 与 `CI Gate` 的真实 GitHub Actions 结果，并确认同一 PR 的旧运行会被新提交取消
-- [ ] 5.3 在获得远端仓库配置授权后，只保留 squash merge、禁用 merge commit 与 rebase merge、启用合并后自动删除来源分支，并保持 Merge Queue 关闭
-- [ ] 5.4 配置无绕过主体的 `main` 规则，要求 Pull Request、最新 `main` 上成功的 `CI Gate` 和全部 Review 对话已解决，审批人数设为 0，并禁止直接推送、强推和删除
-- [ ] 5.5 通过 GitHub API 回读仓库合并设置及 `main` 全部规则字段，并用未满足门禁的测试分支验证操作会被拒绝；不得仅依据配置请求成功声明门禁已生效
+- [x] 5.2 验证 Pull Request 最新 head 上 `Code Quality`、`Tests`、`Docs & OpenSpec` 与 `CI Gate` 的真实 GitHub Actions 结果，并确认同一 PR 的旧运行会被新提交取消
+- [x] 5.3 在获得远端仓库配置授权后，只保留 squash merge、禁用 merge commit 与 rebase merge、启用合并后自动删除来源分支，并保持 Merge Queue 关闭
+- [x] 5.4 配置无绕过主体的 `main` 规则，要求 Pull Request、最新 `main` 上成功的 `CI Gate` 和全部 Review 对话已解决，审批人数设为 0，并禁止直接推送、强推和删除
+- [x] 5.5 通过 GitHub API 回读仓库合并设置及 `main` 全部规则字段，并用未满足门禁的测试分支验证操作会被拒绝；不得仅依据配置请求成功声明门禁已生效
 - [ ] 5.6 在获得合并授权后仅合并已验证的最新 PR head，确认 squash 提交触发 `main` push CI、`CI Gate` 成功且来源分支自动删除；未获得授权时明确保留为未执行远端验收
