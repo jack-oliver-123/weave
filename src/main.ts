@@ -4,10 +4,12 @@ import { pathToFileURL } from 'node:url';
 import { cwd } from 'node:process';
 import { parseCliArgs, assertSupportedNodeVersion, helpText } from './config/cli.js';
 import { loadConfig } from './config/index.js';
+import { resolveWorkspace } from './config/workspace.js';
 import { ConversationManager } from './engine/conversation-manager.js';
 import { createLlmClient } from './engine/llm/factory.js';
 import { runTui } from './interaction/weave-tui.js';
 import { InMemoryConversationStore } from './memory/conversation-store.js';
+import { createCoreToolRegistry, registryDispatcher, ToolCallScheduler, Workspace } from './tool/index.js';
 
 const require = createRequire(import.meta.url);
 const packageJson = require('../package.json') as { version: string };
@@ -24,14 +26,27 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   }
 
   assertSupportedNodeVersion();
-  const config = await loadConfig({ configPath: cli.configPath, profileName: cli.profileName });
+  const config = await loadConfig({
+    configPath: cli.configPath,
+    profileName: cli.profileName,
+    toolsEnabled: cli.toolsEnabled,
+  });
+  const workspaceConfig = await resolveWorkspace(cli.workspacePath, cwd());
   const client = createLlmClient(config.selected);
   const store = new InMemoryConversationStore();
-  const conversation = new ConversationManager(client, store, { maxTokens: config.selected.maxTokens });
+  let tools;
+  if (config.toolsEnabled) {
+    const registry = createCoreToolRegistry(await Workspace.create(workspaceConfig.root));
+    tools = { definitions: registry.listDefinitions(), scheduler: new ToolCallScheduler(registryDispatcher(registry)) };
+  }
+  const conversation = new ConversationManager(client, store, {
+    maxTokens: config.selected.maxTokens,
+    ...(tools === undefined ? {} : { tools }),
+  });
   await runTui({
     conversation,
     profile: client.profile,
-    cwd: cwd(),
+    cwd: workspaceConfig.root,
     version: packageJson.version,
   });
 }

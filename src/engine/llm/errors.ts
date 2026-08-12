@@ -8,6 +8,13 @@ export class ProtocolError extends Error {
   }
 }
 
+export class InternalLlmError extends Error {
+  constructor() {
+    super('internal LLM boundary error');
+    this.name = 'InternalLlmError';
+  }
+}
+
 export function protocolError(): SafeError {
   return {
     code: 'PROTOCOL_ERROR',
@@ -25,6 +32,9 @@ export function providerEventError(code?: string): SafeError {
 }
 
 export function mapClientError(error: unknown): SafeError {
+  if (error instanceof InternalLlmError) {
+    return { code: 'INTERNAL_ERROR', message: '模型协议边界处理失败。', retryable: false };
+  }
   if (error instanceof ProtocolError) {
     return protocolError();
   }
@@ -33,6 +43,10 @@ export function mapClientError(error: unknown): SafeError {
   }
 
   const status = readNumber(error, 'status');
+  const providerCode = readString(error, 'code') ?? readString(readRecord(error, 'error'), 'code');
+  if (providerCode === 'context_length_exceeded' || providerCode === 'context_window_exceeded') {
+    return { code: 'CONTEXT_LIMIT_EXCEEDED', message: '完整对话历史超过了模型上下文上限。', retryable: false };
+  }
   if (status === 401 || status === 403) {
     return { code: 'AUTH_FAILED', message: '模型服务身份验证失败。', retryable: false };
   }
@@ -41,6 +55,9 @@ export function mapClientError(error: unknown): SafeError {
   }
   if (status === 408 || status === 409 || (status !== undefined && status >= 500)) {
     return { code: 'PROVIDER_UNAVAILABLE', message: '模型服务暂时不可用。', retryable: true };
+  }
+  if (status !== undefined && status >= 400) {
+    return { code: 'PROVIDER_ERROR', message: '模型服务拒绝了请求。', retryable: false };
   }
   return { code: 'NETWORK_ERROR', message: '无法连接模型服务。', retryable: true };
 }

@@ -22,9 +22,32 @@ describe('InMemoryConversationStore', () => {
     expect(new InMemoryConversationStore().getMessages()).toEqual([]);
   });
 
+  it('按阶段追加并回放中立文本、工具调用与工具结果块', () => {
+    const store = new InMemoryConversationStore();
+    const call = { callId: 'c1', providerCallId: 'p1', name: 'read_file', input: { path: 'a.txt' } };
+    const result = {
+      callId: 'c1', providerCallId: 'p1', toolName: 'read_file', isError: false,
+      content: { summary: '读取完成', data: { content: 'hello' } },
+    };
+    store.appendMessages([{ role: 'user', content: '读取文件' }]);
+    store.appendMessages([{ role: 'assistant', content: [
+      { type: 'text', text: '我来读取。' }, { type: 'tool_call', call },
+    ] }]);
+    store.appendMessages([{ role: 'tool', content: [{ type: 'tool_result', result }] }]);
+    const snapshot = store.getMessages();
+    expect(snapshot).toEqual([
+      { role: 'user', content: '读取文件' },
+      { role: 'assistant', content: [{ type: 'text', text: '我来读取。' }, { type: 'tool_call', call }] },
+      { role: 'tool', content: [{ type: 'tool_result', result }] },
+    ]);
+    (snapshot[1]!.content as { type: string; text?: string }[])[0]!.text = '被修改';
+    expect((store.getMessages()[1]!.content as { type: string; text?: string }[])[0]).toMatchObject({ text: '我来读取。' });
+  });
+
   it('可通过共享存储端口替换', () => {
     const replacement: ConversationStore = {
       getMessages: () => [{ role: 'user', content: '外部存储' }],
+      appendMessages: () => undefined,
       commitTurn: () => undefined,
     };
     expect(replacement.getMessages()).toHaveLength(1);

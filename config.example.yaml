@@ -1,4 +1,6 @@
 default_profile: claude
+tools:
+  enabled: true
 profiles:
   - name: claude
     protocol: anthropic-messages

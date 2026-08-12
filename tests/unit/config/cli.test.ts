@@ -14,6 +14,17 @@ describe('CLI startup parsing', () => {
     });
   });
 
+  it('parses workspace and explicit tool switches', () => {
+    expect(parseCliArgs(['--workspace', 'repo', '--no-tools'])).toEqual({
+      action: 'run', workspacePath: 'repo', toolsEnabled: false,
+    });
+    expect(parseCliArgs(['--tools'])).toEqual({ action: 'run', toolsEnabled: true });
+  });
+
+  it('rejects conflicting tool switches', () => {
+    expect(() => parseCliArgs(['--tools', '--no-tools'])).toThrowError('互斥');
+  });
+
   it.each([
     [['--help'], 'help'],
     [['--version'], 'version'],
@@ -21,7 +32,7 @@ describe('CLI startup parsing', () => {
     expect(parseCliArgs([...args])).toEqual({ action });
   });
 
-  it.each([['--unknown'], ['--config'], ['--profile']])('rejects invalid arguments', (args) => {
+  it.each([['--unknown'], ['--config'], ['--profile'], ['--workspace']])('rejects invalid arguments', (args) => {
     expect(() => parseCliArgs(args)).toThrow(CliError);
   });
 

@@ -5,6 +5,8 @@ export type CliOptions =
       readonly action: 'run';
       readonly configPath?: string;
       readonly profileName?: string;
+      readonly workspacePath?: string;
+      readonly toolsEnabled?: boolean;
     };
 
 export class CliError extends Error {
@@ -17,6 +19,8 @@ export class CliError extends Error {
 export function parseCliArgs(args: readonly string[]): CliOptions {
   let configPath: string | undefined;
   let profileName: string | undefined;
+  let workspacePath: string | undefined;
+  let toolsEnabled: boolean | undefined;
 
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -36,10 +40,28 @@ export function parseCliArgs(args: readonly string[]): CliOptions {
       profileName = requireValue(args, ++index, '--profile');
       continue;
     }
+    if (argument === '--workspace') {
+      workspacePath = requireValue(args, ++index, '--workspace');
+      continue;
+    }
+    if (argument === '--tools' || argument === '--no-tools') {
+      const requested = argument === '--tools';
+      if (toolsEnabled !== undefined && toolsEnabled !== requested) {
+        throw new CliError('--tools 与 --no-tools 互斥');
+      }
+      toolsEnabled = requested;
+      continue;
+    }
     throw new CliError(`未知参数：${argument}`);
   }
 
-  return { action: 'run', configPath, profileName };
+  return {
+    action: 'run',
+    ...(configPath === undefined ? {} : { configPath }),
+    ...(profileName === undefined ? {} : { profileName }),
+    ...(workspacePath === undefined ? {} : { workspacePath }),
+    ...(toolsEnabled === undefined ? {} : { toolsEnabled }),
+  };
 }
 
 export function assertSupportedNodeVersion(version = process.versions.node): void {
@@ -53,11 +75,14 @@ export function helpText(): string {
   return [
     'Weave - 多协议终端对话',
     '',
-    '用法: weave [--config <path>] [--profile <name>]',
+    '用法: weave [--config <path>] [--profile <name>] [--workspace <path>] [--tools|--no-tools]',
     '',
     '选项:',
     '  --config <path>   指定 YAML 配置文件',
     '  --profile <name>  覆盖 default_profile',
+    '  --workspace <path> 固定本次会话工作区',
+    '  --tools            启用核心工具',
+    '  --no-tools         禁用核心工具并使用纯文本模式',
     '  --help, -h        显示帮助',
     '  --version, -v     显示版本',
   ].join('\n');

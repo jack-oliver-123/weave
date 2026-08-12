@@ -12,6 +12,7 @@ $sizeText = -join ([char]0x7EC8, [char]0x7AEF, [char]0x7A97, [char]0x53E3, [char
 $queuedText = -join ([char]0x5DF2, [char]0x6392, [char]0x961F)
 $pausedText = -join ([char]0x961F, [char]0x5217, [char]0x5DF2, [char]0x6682, [char]0x505C)
 $historyText = -join ([char]0x6B63, [char]0x5728, [char]0x67E5, [char]0x770B, [char]0x4E0A, [char]0x6587)
+$toolStatsText = -join ([char]0x5B8C, [char]0x6210, ' ', [char]0x00B7, ' 2 ', [char]0x56DE, [char]0x5408, ' ', [char]0x00B7, ' 2 ', [char]0x5DE5, [char]0x5177, ' ', [char]0x00B7, ' 1 ', [char]0x9519, [char]0x8BEF)
 
 function Invoke-Psmux {
   $psmuxArgs = @($args)
@@ -113,6 +114,12 @@ try {
   Send-Key 'C-End'
   Wait-PaneText 'long-line-32' | Out-Null
 
+  Send-Literal 'tool-status'
+  Send-Key 'Enter'
+  $toolPane = Wait-PaneText $toolStatsText
+  if (-not $toolPane.Contains('read_file') -or -not $toolPane.Contains('PRIOR_WRITE_FAILED')) { throw 'CMD tool status is missing' }
+  if (($toolPane | Select-String -Pattern 'Weave ve2e' -AllMatches).Matches.Count -ne 1) { throw 'CMD header count changed after tool status' }
+
   Invoke-Psmux new-session -d -s $smallSession -x 79 -y 23 -- cmd.exe /d /k | Out-Null
   Invoke-Psmux set-option -t $smallSession status off | Out-Null
   Start-Sleep -Milliseconds 500
@@ -187,6 +194,11 @@ try {
   if ($powerShellScrolled.Contains('long-line-32') -or -not $powerShellScrolled.Contains($historyText)) { throw 'PowerShell wheel check failed' }
   Send-TargetKey $powerShellSession 'C-End'
   Wait-TargetText $powerShellSession 'long-line-32' | Out-Null
+
+  Send-TargetLiteral $powerShellSession 'tool-status'
+  Send-TargetKey $powerShellSession 'Enter'
+  $powerShellTools = Wait-TargetText $powerShellSession $toolStatsText
+  if (-not $powerShellTools.Contains('read_file') -or -not $powerShellTools.Contains('PRIOR_WRITE_FAILED')) { throw 'PowerShell tool status is missing' }
 
   Invoke-Psmux new-session -d -s $powerShellSmallSession -x 79 -y 23 -- powershell.exe -NoLogo -NoProfile -NoExit | Out-Null
   Invoke-Psmux set-option -t $powerShellSmallSession status off | Out-Null

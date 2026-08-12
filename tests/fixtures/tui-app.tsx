@@ -2,7 +2,7 @@ import React from 'react';
 import { ConversationManager } from '../../src/engine/conversation-manager.js';
 import { runTui } from '../../src/interaction/weave-tui.js';
 import { InMemoryConversationStore } from '../../src/memory/conversation-store.js';
-import type { LlmClient, LlmRequest, LlmStreamEvent, ProfileSummary } from '../../src/shared/types.js';
+import type { ConversationController, LlmClient, LlmRequest, LlmStreamEvent, ProfileSummary, TurnEvent, UserTurn } from '../../src/shared/types.js';
 
 const profile: ProfileSummary = {
   name: 'deterministic-fixture',
@@ -84,11 +84,44 @@ function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+class ToolStatusFixtureController implements ConversationController {
+  private fixtureTurnId: string | undefined;
+  constructor(private readonly delegate: ConversationController) {}
+  get activeTurnId(): string | undefined { return this.fixtureTurnId ?? this.delegate.activeTurnId; }
+  submit(turn: UserTurn): AsyncIterable<TurnEvent> {
+    if (turn.content !== 'tool-status') return this.delegate.submit(turn);
+    if (this.activeTurnId !== undefined) throw new Error('fixture busy');
+    this.fixtureTurnId = 'tool-status-turn';
+    return this.events();
+  }
+  cancel(): void {
+    if (this.fixtureTurnId !== undefined) this.fixtureTurnId = undefined;
+    else this.delegate.cancel();
+  }
+  private async *events(): AsyncGenerator<TurnEvent> {
+    const turnId = 'tool-status-turn';
+    yield { type: 'turn_start', turnId, userText: 'tool-status', startedAt: performance.now() };
+    yield { type: 'text_delta', turnId, delta: '检查工具状态。' };
+    yield { type: 'tool_call_queued', turnId, callId: 'c1', toolName: 'read_file', summary: '等待读取 input.txt' };
+    yield { type: 'tool_call_queued', turnId, callId: 'c2', toolName: 'edit_file', summary: '等待编辑 output.txt' };
+    yield { type: 'tool_call_start', turnId, callId: 'c1', toolName: 'read_file', summary: '正在读取 input.txt' };
+    await delay(150, new AbortController().signal);
+    yield { type: 'tool_call_complete', turnId, callId: 'c1', toolName: 'read_file', summary: '读取 input.txt 完成', isError: false };
+    yield { type: 'tool_call_skipped', turnId, callId: 'c2', toolName: 'edit_file', summary: '前序写入失败，未执行', isError: true,
+      error: { code: 'PRIOR_WRITE_FAILED', message: '未执行', retryable: false } };
+    yield { type: 'text_delta', turnId, delta: '工具状态完成。' };
+    this.fixtureTurnId = undefined;
+    yield { type: 'turn_complete', turnId, status: 'completed', finishReason: 'stop', durationMs: 200,
+      modelTurnCount: 2, toolCallCount: 2, toolErrorCount: 1 };
+  }
+}
+
 const client = new TuiFixtureClient();
 const conversation = new ConversationManager(client, new InMemoryConversationStore(), { maxTokens: 256 });
+const controller = new ToolStatusFixtureController(conversation);
 
 await runTui({
-  conversation,
+  conversation: controller,
   profile,
   version: 'e2e',
   cwd: process.cwd(),

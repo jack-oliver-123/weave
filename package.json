@@ -34,8 +34,10 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",
+    "ajv": "^8.20.0",
     "cli-highlight": "^2.1.11",
     "ink": "^7.1.1",
+    "minimatch": "^10.2.6",
     "openai": "^7.4.0",
     "react": "^19.2.8",
     "react-devtools-core": "^6.1.2",

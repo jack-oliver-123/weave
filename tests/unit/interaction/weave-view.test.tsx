@@ -77,4 +77,28 @@ describe('WeaveView', () => {
     expect(first.match(/\/ \\__/g)).toHaveLength(1);
     expect(second.match(/\/ \\__/g)).toHaveLength(1);
   });
+
+  it('在单一 transcript 中紧凑显示工具状态、错误码与整轮统计', () => {
+    let state = reduceTuiState(initialTuiState(), { type: 'turn_event', event: {
+      type: 'turn_start', turnId: 'tools', userText: '检查', startedAt: 0,
+    } });
+    state = reduceTuiState(state, { type: 'turn_event', event: { type: 'text_delta', turnId: 'tools', delta: '我先检查。' } });
+    state = reduceTuiState(state, { type: 'turn_event', event: {
+      type: 'tool_call_complete', turnId: 'tools', callId: 'c1', toolName: 'read_file', summary: '读取完成', isError: false,
+    } });
+    state = reduceTuiState(state, { type: 'turn_event', event: {
+      type: 'tool_call_skipped', turnId: 'tools', callId: 'c2', toolName: 'edit_file', summary: '未执行', isError: true,
+      error: { code: 'PRIOR_WRITE_FAILED', message: '前序写入失败', retryable: false },
+    } });
+    state = reduceTuiState(state, { type: 'turn_event', event: { type: 'text_delta', turnId: 'tools', delta: '检查结束。' } });
+    state = reduceTuiState(state, { type: 'turn_event', event: {
+      type: 'turn_complete', turnId: 'tools', status: 'completed', finishReason: 'stop', durationMs: 20,
+      modelTurnCount: 2, toolCallCount: 2, toolErrorCount: 1,
+    } });
+    const frame = render(<WeaveView {...baseProps} state={state} />).lastFrame() ?? '';
+    expect(frame).toContain('✓ read_file · 读取完成');
+    expect(frame).toContain('↷ edit_file · 未执行 (PRIOR_WRITE_FAILED)');
+    expect(frame).toContain('完成 · 2 回合 · 2 工具 · 1 错误');
+    expect(frame).not.toContain('前序写入失败');
+  });
 });
