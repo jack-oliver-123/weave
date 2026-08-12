@@ -2,11 +2,12 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
-  { text: "add-ci-quality-gates", link: "/changes/active/add-ci-quality-gates/" },
+
 ];
 
 const archivedItems = [
   { text: "improve-terminal-chat-experience", link: "/changes/archive/2026-08-12-improve-terminal-chat-experience/" },
+  { text: "add-ci-quality-gates", link: "/changes/archive/2026-08-12-add-ci-quality-gates/" },
   { text: "add-multi-protocol-llm-tui-chat", link: "/changes/archive/2026-08-11-add-multi-protocol-llm-tui-chat/" },
   { text: "scaffold-project-skeleton", link: "/changes/archive/2026-08-10-scaffold-project-skeleton/" },
 ];
