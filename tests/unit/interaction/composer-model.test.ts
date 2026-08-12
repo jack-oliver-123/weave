@@ -32,4 +32,38 @@ describe('composer model', () => {
     state = applyComposerKey(state, '', { delete: true }, true).state;
     expect(state).toEqual({ value: 'a', cursor: 1 });
   });
+
+  it('左右移动、退格和删除不会拆分 Emoji 或组合字符', () => {
+    const family = '👨‍👩‍👧‍👦';
+    let state: ComposerState = { value: `A${family}e\u0301`, cursor: `A${family}e\u0301`.length };
+    state = applyComposerKey(state, '', { leftArrow: true }, true).state;
+    expect(state.cursor).toBe(`A${family}`.length);
+    state = applyComposerKey(state, '', { backspace: true }, true).state;
+    expect(state).toEqual({ value: 'Ae\u0301', cursor: 1 });
+  });
+
+  it('跨显式换行纵向移动时落在相邻行的同列而不是换行符之后', () => {
+    const value = '第一行\n第二行';
+    const movedUp = applyComposerKey(
+      { value, cursor: value.length },
+      '',
+      { upArrow: true },
+      true,
+      20,
+    ).state;
+    expect(movedUp.cursor).toBe('第一行'.length);
+
+    const movedDown = applyComposerKey(movedUp, '', { downArrow: true }, true, 20).state;
+    expect(movedDown.cursor).toBe(value.length);
+
+    const windowsValue = '第一行\r\n第二行';
+    const windowsMovedUp = applyComposerKey(
+      { value: windowsValue, cursor: windowsValue.length },
+      '',
+      { upArrow: true },
+      true,
+      20,
+    ).state;
+    expect(windowsMovedUp.cursor).toBe('第一行'.length);
+  });
 });

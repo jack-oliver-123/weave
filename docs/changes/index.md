@@ -10,5 +10,6 @@ title: OpenSpec 变更
 
 ## 已归档
 
+- [improve-terminal-chat-experience](/changes/archive/2026-08-12-improve-terminal-chat-experience/)
 - [add-multi-protocol-llm-tui-chat](/changes/archive/2026-08-11-add-multi-protocol-llm-tui-chat/)
 - [scaffold-project-skeleton](/changes/archive/2026-08-10-scaffold-project-skeleton/)
