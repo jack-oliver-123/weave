@@ -2,7 +2,7 @@
 import { defineConfig } from "vitepress";
 
 const activeItems = [
-
+  { text: "add-ci-quality-gates", link: "/changes/active/add-ci-quality-gates/" },
 ];
 
 const archivedItems = [

@@ -6,7 +6,7 @@ title: OpenSpec 变更
 
 ## 进行中
 
-当前没有进行中的变更。
+- [add-ci-quality-gates](/changes/active/add-ci-quality-gates/)
 
 ## 已归档
 

@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit",
     "start": "node dist/main.js",
     "dev": "tsx src/main.ts",
-    "test": "vitest run",
+    "test": "npm run test:ci && vitest run",
+    "test:ci": "node tests/ci/workflow-contract.mjs",
     "test:watch": "vitest",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
@@ -28,7 +29,8 @@
     "docs:link": "node scripts/ensure-docs-link.mjs",
     "docs:dev": "vitepress docs",
     "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs"
+    "docs:preview": "vitepress preview docs",
+    "spec:validate": "openspec validate --all --strict --no-interactive"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",
@@ -45,6 +47,7 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
+    "@fission-ai/openspec": "1.7.0",
     "@types/node": "^22.0.0",
     "@types/react": "^19.2.0",
     "ink-testing-library": "^4.0.0",
