@@ -62,9 +62,41 @@ export interface ChatMessage {
 }
 
 export interface UserTurn {
+  readonly mode: AgentTaskMode;
   readonly content: string;
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
+
+export type AgentTaskMode = 'react' | 'plan';
+
+export type PlanStepStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'skipped' | 'invalidated';
+
+export interface PlanStep {
+  readonly id: string;
+  readonly description: string;
+  readonly dependencies: readonly string[];
+  readonly successCriteria: readonly string[];
+  readonly status: PlanStepStatus;
+  readonly evidence: readonly string[];
+  readonly statusReason?: string;
+}
+
+export interface Plan {
+  readonly planId: string;
+  readonly version: number;
+  readonly supersedesVersion?: number;
+  readonly goal: string;
+  readonly successCriteria: readonly string[];
+  readonly steps: readonly PlanStep[];
+}
+
+export type TaskAction =
+  | { readonly type: 'approve_plan'; readonly taskId: string; readonly planId: string; readonly version: number }
+  | { readonly type: 'refine_plan'; readonly taskId: string; readonly content?: string }
+  | { readonly type: 'exit_task'; readonly taskId: string }
+  | { readonly type: 'answer_question'; readonly taskId: string; readonly questionId: string; readonly content: string }
+  | { readonly type: 'continue_task'; readonly taskId: string; readonly content?: string }
+  | { readonly type: 'resume_task'; readonly taskId: string };
 
 export interface TokenUsage {
   readonly inputTokens?: number;
@@ -122,8 +154,19 @@ export type TurnEvent =
       readonly turnId: string;
       readonly userText: string;
       readonly startedAt: number;
+      readonly taskMode?: AgentTaskMode;
+      readonly taskPhase?: 'react' | 'plan_draft' | 'plan_execute' | 'task_exit';
     }
   | { readonly type: 'text_delta'; readonly turnId: string; readonly delta: string }
+  | {
+      readonly type: 'agent_iteration';
+      readonly turnId: string;
+      readonly taskId: string;
+      readonly runId: string;
+      readonly iteration: number;
+      readonly phase: 'started' | 'completed';
+      readonly stepId?: string;
+    }
   | {
       readonly type: 'turn_complete';
       readonly turnId: string;
@@ -150,6 +193,10 @@ export type TurnEvent =
   | {
       readonly type: 'tool_call_queued' | 'tool_call_start';
       readonly turnId: string;
+      readonly taskId?: string;
+      readonly runId?: string;
+      readonly iteration?: number;
+      readonly stepId?: string;
       readonly callId: string;
       readonly toolName: string;
       readonly summary: string;
@@ -157,18 +204,147 @@ export type TurnEvent =
   | {
       readonly type: 'tool_call_complete' | 'tool_call_skipped';
       readonly turnId: string;
+      readonly taskId?: string;
+      readonly runId?: string;
+      readonly iteration?: number;
+      readonly stepId?: string;
       readonly callId: string;
       readonly toolName: string;
       readonly summary: string;
       readonly isError: boolean;
       readonly error?: ToolErrorContent;
+    }
+  | {
+      readonly type: 'plan_ready';
+      readonly turnId: string;
+      readonly taskId: string;
+      readonly runId?: string;
+      readonly plan: Plan;
+    }
+  | {
+      readonly type: 'plan_step';
+      readonly turnId: string;
+      readonly taskId: string;
+      readonly runId?: string;
+      readonly planId: string;
+      readonly version: number;
+      readonly stepId: string;
+      readonly status: 'running' | 'completed' | 'failed' | 'skipped';
+      readonly evidence?: readonly string[];
+      readonly reason?: string;
+    }
+  | {
+      readonly type: 'task_state';
+      readonly turnId: string;
+      readonly taskId: string;
+      readonly state: 'awaiting_input' | 'awaiting_approval' | 'stopped' | 'cancelled' | 'exited';
+      readonly summary: string;
+      readonly questionId?: string;
+      readonly runCount?: number;
+      readonly totalIterations?: number;
+    }
+  | {
+      readonly type: 'plan_revision';
+      readonly turnId: string;
+      readonly taskId: string;
+      readonly reason: string;
+      readonly suggestion: string;
     };
 
-export type AgentEvent = TurnEvent;
+export type AgentStopReason =
+  | 'completed'
+  | 'iteration_limit'
+  | 'cancelled'
+  | 'abnormal'
+  | 'awaiting_input'
+  | 'plan_revision';
+
+export interface RunProgressSummary {
+  readonly completedWork: readonly string[];
+  readonly unfinishedWork: readonly string[];
+  readonly sideEffects: readonly string[];
+  readonly lastError?: string;
+}
+
+export interface RunOutcome {
+  readonly reason: AgentStopReason;
+  readonly error?: SafeError;
+  readonly result?: string;
+  readonly verificationSummary?: string;
+  readonly summary: string;
+  readonly progress: RunProgressSummary;
+  readonly plan?: Plan;
+  readonly question?: { readonly questionId: string; readonly prompt: string };
+  readonly revision?: { readonly reason: string; readonly suggestion: string };
+  readonly usage?: TokenUsage;
+  readonly iterationCount: number;
+  readonly toolCallCount: number;
+  readonly toolErrorCount: number;
+}
+
+interface AgentEventBase {
+  readonly taskId: string;
+  readonly runId: string;
+}
+
+export type AgentEvent =
+  | (AgentEventBase & { readonly type: 'run_started'; readonly mode: AgentTaskMode; readonly startedAt: number })
+  | (AgentEventBase & { readonly type: 'iteration_started' | 'iteration_completed'; readonly iteration: number; readonly stepId?: string })
+  | (AgentEventBase & {
+      readonly type: 'tool_call_queued' | 'tool_call_started';
+      readonly iteration: number;
+      readonly callId: string;
+      readonly toolName: string;
+      readonly call?: ToolCallRequest;
+      readonly stepId?: string;
+    })
+  | (AgentEventBase & {
+      readonly type: 'tool_call_completed' | 'tool_call_skipped';
+      readonly iteration: number;
+      readonly callId: string;
+      readonly toolName: string;
+      readonly result: ToolCallResult;
+      readonly stepId?: string;
+    })
+  | (AgentEventBase & { readonly type: 'plan_submitted'; readonly plan: Plan })
+  | (AgentEventBase & {
+      readonly type: 'plan_step_started' | 'plan_step_completed' | 'plan_step_failed' | 'plan_step_skipped';
+      readonly planId: string;
+      readonly version: number;
+      readonly stepId: string;
+      readonly evidence?: readonly string[];
+      readonly reason?: string;
+    })
+  | (AgentEventBase & { readonly type: 'user_input_requested'; readonly questionId: string; readonly prompt: string })
+  | (AgentEventBase & { readonly type: 'plan_revision_requested'; readonly reason: string; readonly suggestion: string })
+  | (AgentEventBase & { readonly type: 'run_stopped'; readonly outcome: RunOutcome });
+
+export type ToolDefinitionScope = 'all' | 'read_only' | 'none';
+
+export interface ToolExecutionBatch {
+  readonly results: readonly ToolCallResult[];
+  readonly totalCalls: number;
+  readonly businessToolLimitReached: boolean;
+}
+
+export interface ToolExecutionHooks {
+  readonly onStart?: (call: ToolCallRequest) => void;
+}
+
+export interface ToolExecutor {
+  definitions(scope: ToolDefinitionScope): readonly ToolDefinition[];
+  execute(
+    calls: readonly ToolCallRequest[],
+    signal: AbortSignal,
+    previousCalls?: number,
+    hooks?: ToolExecutionHooks,
+  ): Promise<ToolExecutionBatch>;
+}
 
 export interface ConversationController {
   readonly activeTurnId: string | undefined;
   submit(turn: UserTurn): AsyncIterable<TurnEvent>;
+  dispatch(action: TaskAction): AsyncIterable<TurnEvent>;
   cancel(): void;
 }
 

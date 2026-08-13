@@ -1,7 +1,7 @@
 import React from 'react';
 import { render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { ConversationController, TurnEvent, UserTurn } from '../../src/shared/types.js';
+import type { ConversationController, TaskAction, TurnEvent, UserTurn } from '../../src/shared/types.js';
 import { WeaveTui } from '../../src/interaction/weave-tui.js';
 import { WeaveView } from '../../src/interaction/weave-view.js';
 import { initialTuiState, reduceTuiState } from '../../src/interaction/tui-state.js';
@@ -120,7 +120,51 @@ describe('TUI 交互集成', () => {
     expect(frame).not.toMatch(/###|\*\*|```|█/);
     expect(frame.split('\n')).toHaveLength(30);
   });
+
+  it('显式解析 /plan、拒绝空命令，并用方向键确认当前计划版本', async () => {
+    const controller = new PlanController();
+    const instance = render(<WeaveTui conversation={controller} profile={profile} cwd="C:\Code\Weave" version="test" columns={100} rows={30} />);
+    instances.push(instance);
+
+    enter(instance, '/plan');
+    await waitFor(() => instance.lastFrame()?.includes('用法：/plan <任务>') === true);
+    expect(controller.turns).toHaveLength(0);
+
+    enter(instance, '/plan 完成交付');
+    await waitFor(() => instance.lastFrame()?.includes('执行计划') === true);
+    expect(controller.turns).toEqual([{ mode: 'plan', content: '完成交付' }]);
+    instance.stdin.write('\u001b[B');
+    instance.stdin.write('\u001b[A');
+    instance.stdin.write('\r');
+    await waitFor(() => controller.actions.length === 1);
+    expect(controller.actions[0]).toEqual({ type: 'approve_plan', taskId: 'task-1', planId: 'plan-1', version: 2 });
+  });
 });
+
+class PlanController implements ConversationController {
+  activeTurnId: string | undefined;
+  readonly turns: UserTurn[] = [];
+  readonly actions: TaskAction[] = [];
+  submit(turn: UserTurn): AsyncIterable<TurnEvent> { this.turns.push(turn); return this.planEvents(); }
+  dispatch(action: TaskAction): AsyncIterable<TurnEvent> { this.actions.push(action); return this.completedEvents(); }
+  cancel(): void {}
+  private async *planEvents(): AsyncGenerator<TurnEvent> {
+    const turnId = 'plan-turn'; this.activeTurnId = turnId;
+    const plan = { planId: 'plan-1', version: 2, goal: '完成交付', successCriteria: ['通过'], steps: [
+      { id: 's1', description: '实现', dependencies: [], successCriteria: ['单测'], status: 'pending' as const, evidence: [] },
+    ] };
+    yield { type: 'turn_start', turnId, userText: '完成交付', startedAt: 0 };
+    yield { type: 'plan_ready', turnId, taskId: 'task-1', plan };
+    this.activeTurnId = undefined;
+    yield { type: 'turn_complete', turnId, status: 'completed', finishReason: 'stop', durationMs: 1 };
+  }
+  private async *completedEvents(): AsyncGenerator<TurnEvent> {
+    const turnId = 'execute-turn'; this.activeTurnId = turnId;
+    yield { type: 'turn_start', turnId, userText: '执行计划', startedAt: 0 };
+    this.activeTurnId = undefined;
+    yield { type: 'turn_complete', turnId, status: 'completed', finishReason: 'stop', durationMs: 1 };
+  }
+}
 
 class CompletingController implements ConversationController {
   activeTurnId: string | undefined;
@@ -135,6 +179,7 @@ class CompletingController implements ConversationController {
   }
 
   cancel(): void {}
+  dispatch(): AsyncIterable<TurnEvent> { throw new Error('本 fixture 不支持任务操作'); }
 
   releaseFirst(): void {
     this.firstGate.resolve();
@@ -162,6 +207,7 @@ class TruncatingController implements ConversationController {
   }
 
   cancel(): void {}
+  dispatch(): AsyncIterable<TurnEvent> { throw new Error('本 fixture 不支持任务操作'); }
 
   releaseFirst(): void {
     this.firstGate.resolve();

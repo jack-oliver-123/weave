@@ -7,5 +7,5 @@
     "declarationMap": false,
     "sourceMap": false
   },
-  "include": ["../../src/**/*.ts", "../../src/**/*.tsx", "../fixtures/tui-app.tsx"]
+  "include": ["../../src/**/*.ts", "../../src/**/*.tsx", "../fixtures/*.tsx"]
 }

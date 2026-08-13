@@ -21,11 +21,15 @@ describe('对话端口集成', () => {
     const manager = new ConversationManager(client, store, { maxTokens: 99, createTurnId: () => 'turn' });
 
     const events: TurnEvent[] = [];
-    for await (const event of manager.submit({ content: '新问题' })) events.push(event);
+    for await (const event of manager.submit({ mode: 'react', content: '新问题' })) events.push(event);
 
     expect(stream).toHaveBeenCalledOnce();
     expect(stream.mock.calls[0]?.[0].messages).toEqual([...before, { role: 'user', content: '新问题' }]);
-    expect(store.getMessages()).toEqual(before);
+    expect(store.getMessages()).toEqual([
+      ...before,
+      { role: 'user', content: '新问题' },
+      { role: 'assistant', content: '任务状态：安全错误 已完成：无；未完成：新问题；副作用：无；最后异常：安全错误。' },
+    ]);
     expect(events.at(-1)).toMatchObject({ type: 'turn_error', restoreInput: '新问题', error: { code, retryable } });
   });
 });

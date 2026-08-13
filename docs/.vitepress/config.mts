@@ -6,6 +6,7 @@ const activeItems = [
 ];
 
 const archivedItems = [
+  { text: "add-agent-loop-modes", link: "/changes/archive/2026-08-13-add-agent-loop-modes/" },
   { text: "improve-terminal-chat-experience", link: "/changes/archive/2026-08-12-improve-terminal-chat-experience/" },
   { text: "add-core-tool-system", link: "/changes/archive/2026-08-12-add-core-tool-system/" },
   { text: "add-ci-quality-gates", link: "/changes/archive/2026-08-12-add-ci-quality-gates/" },

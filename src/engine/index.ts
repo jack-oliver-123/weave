@@ -13,3 +13,9 @@ export class EngineLayerStub implements EngineLayer {
 
 export { ConversationManager, ConversationBusyError, ConversationInputError } from './conversation-manager.js';
 export { createLlmClient } from './llm/index.js';
+export { AgentLoop, type AgentRunInput, type AgentRunKind } from './agent-loop.js';
+export { buildSystemPrompt, type PromptContext, type PromptMode } from './prompt-builder.js';
+export { ControlToolCatalog, type AgentPhase, type ControlToolName } from './control-tools.js';
+export { PlanSession, PlanStateError, type PlanSessionState } from './plan-session.js';
+export { AgentTaskSession, TaskStateError, type AgentTaskState } from './task-session.js';
+export { PlanValidationError, validatePlanSubmission } from './plan.js';

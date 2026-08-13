@@ -10,6 +10,7 @@ title: OpenSpec 变更
 
 ## 已归档
 
+- [add-agent-loop-modes](/changes/archive/2026-08-13-add-agent-loop-modes/)
 - [improve-terminal-chat-experience](/changes/archive/2026-08-12-improve-terminal-chat-experience/)
 - [add-core-tool-system](/changes/archive/2026-08-12-add-core-tool-system/)
 - [add-ci-quality-gates](/changes/archive/2026-08-12-add-ci-quality-gates/)

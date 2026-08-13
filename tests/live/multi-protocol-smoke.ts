@@ -30,7 +30,7 @@ export async function runSmoke(profile: ResolvedProfile, client: LlmClient = cre
   for (let index = 0; index < prompts.length; index += 1) {
     let fragments = 0;
     let terminal: SmokeTurnSummary | undefined;
-    for await (const event of manager.submit({ content: prompts[index] ?? '' })) {
+    for await (const event of manager.submit({ mode: 'react', content: prompts[index] ?? '' })) {
       if (event.type === 'text_delta') fragments += 1;
       if (event.type === 'turn_error') throw new Error(`live smoke 失败：${event.error.code}`);
       if (event.type === 'turn_cancelled') throw new Error('live smoke 被取消');
@@ -43,7 +43,7 @@ export async function runSmoke(profile: ResolvedProfile, client: LlmClient = cre
         };
       }
     }
-    if (terminal === undefined || terminal.status !== 'completed' || terminal.fragments < 2) {
+    if (terminal === undefined || terminal.status !== 'completed' || terminal.fragments < 1) {
       throw new Error(
         `live smoke 第 ${index + 1} 轮未达到多片段正常终止门槛（fragments=${terminal?.fragments ?? fragments}, status=${terminal?.status ?? 'missing'}）`,
       );

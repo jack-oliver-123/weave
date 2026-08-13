@@ -86,21 +86,50 @@ function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
 
 class ToolStatusFixtureController implements ConversationController {
   private fixtureTurnId: string | undefined;
+  private fixtureAbort: AbortController | undefined;
   constructor(private readonly delegate: ConversationController) {}
   get activeTurnId(): string | undefined { return this.fixtureTurnId ?? this.delegate.activeTurnId; }
   submit(turn: UserTurn): AsyncIterable<TurnEvent> {
-    if (turn.content !== 'tool-status') return this.delegate.submit(turn);
+    if (!isFixtureInput(turn.content)) return this.delegate.submit(turn);
     if (this.activeTurnId !== undefined) throw new Error('fixture busy');
-    this.fixtureTurnId = 'tool-status-turn';
-    return this.events();
+    this.fixtureTurnId = `fixture-${turn.content}`;
+    this.fixtureAbort = new AbortController();
+    return this.events(turn.content, this.fixtureAbort.signal);
   }
+  dispatch(action: import('../../src/shared/types.js').TaskAction): AsyncIterable<TurnEvent> { return this.delegate.dispatch(action); }
   cancel(): void {
-    if (this.fixtureTurnId !== undefined) this.fixtureTurnId = undefined;
+    if (this.fixtureTurnId !== undefined) this.fixtureAbort?.abort();
     else this.delegate.cancel();
   }
-  private async *events(): AsyncGenerator<TurnEvent> {
-    const turnId = 'tool-status-turn';
-    yield { type: 'turn_start', turnId, userText: 'tool-status', startedAt: performance.now() };
+  private async *events(content: string, signal: AbortSignal): AsyncGenerator<TurnEvent> {
+    const turnId = this.fixtureTurnId!;
+    yield { type: 'turn_start', turnId, userText: content, startedAt: performance.now() };
+    if (content === 'first-question') {
+      yield { type: 'text_delta', turnId, delta: '### first-chunk' };
+      await delay(8_000, signal);
+      yield { type: 'text_delta', turnId, delta: '\n\n**second-chunk**' };
+    } else if (content === 'queued-one\n\nqueued-two') {
+      yield { type: 'text_delta', turnId, delta: '### queue-ok\n\n| 名称 | 说明 |\n| --- | --- |\n| Weave | 终端助手 |\n\n```ts\nconst longName = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz";\n```\n' };
+    } else if (content === 'line-one\nline-two') {
+      yield { type: 'text_delta', turnId, delta: `history-ok\n${Array.from({ length: 32 }, (_, index) => `long-line-${String(index + 1).padStart(2, '0')}`).join('\n')}\nhistory-ok-tail` };
+    } else if (content === 'cancel-me') {
+      yield { type: 'text_delta', turnId, delta: 'cancel-partial' };
+      try { await delay(30_000, signal); } catch {
+        this.fixtureTurnId = undefined; this.fixtureAbort = undefined;
+        yield { type: 'turn_cancelled', turnId, durationMs: 1 };
+        return;
+      }
+      yield { type: 'text_delta', turnId, delta: 'late-event-must-not-render' };
+    } else if (content === 'after-cancel') {
+      yield { type: 'text_delta', turnId, delta: 'resume-ok' };
+    } else {
+      yield* this.toolEvents(turnId);
+    }
+    this.fixtureTurnId = undefined; this.fixtureAbort = undefined;
+    yield { type: 'turn_complete', turnId, status: 'completed', finishReason: 'stop', durationMs: 200,
+      ...(content === 'tool-status' ? { modelTurnCount: 2, toolCallCount: 2, toolErrorCount: 1 } : {}) };
+  }
+  private async *toolEvents(turnId: string): AsyncGenerator<TurnEvent> {
     yield { type: 'text_delta', turnId, delta: '检查工具状态。' };
     yield { type: 'tool_call_queued', turnId, callId: 'c1', toolName: 'read_file', summary: '等待读取 input.txt' };
     yield { type: 'tool_call_queued', turnId, callId: 'c2', toolName: 'edit_file', summary: '等待编辑 output.txt' };
@@ -110,10 +139,11 @@ class ToolStatusFixtureController implements ConversationController {
     yield { type: 'tool_call_skipped', turnId, callId: 'c2', toolName: 'edit_file', summary: '前序写入失败，未执行', isError: true,
       error: { code: 'PRIOR_WRITE_FAILED', message: '未执行', retryable: false } };
     yield { type: 'text_delta', turnId, delta: '工具状态完成。' };
-    this.fixtureTurnId = undefined;
-    yield { type: 'turn_complete', turnId, status: 'completed', finishReason: 'stop', durationMs: 200,
-      modelTurnCount: 2, toolCallCount: 2, toolErrorCount: 1 };
   }
+}
+
+function isFixtureInput(content: string): boolean {
+  return ['first-question', 'queued-one\n\nqueued-two', 'line-one\nline-two', 'tool-status', 'cancel-me', 'after-cancel'].includes(content);
 }
 
 const client = new TuiFixtureClient();

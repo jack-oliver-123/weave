@@ -37,52 +37,42 @@
 - **THEN** 新进程从空对话历史开始
 
 ### Requirement: 增量提交可关联的 Agent Loop 历史
-工具启用时，系统 SHALL 在 Agent Loop 启动时记录用户消息；每个正常结束的模型响应 SHALL 立即记录为一条可同时包含文本和工具调用的 assistant 消息；每批工具结果 SHALL 按原调用顺序在完成后立即记录。后续取消或系统错误 MUST NOT 删除已完成消息、工具结果或回滚外部副作用。尚未完整组装的模型响应 MUST NOT 写入历史。
+系统 SHALL 在顶层任务开始时记录用户消息，并 SHALL 保存已经完成且会影响后续上下文的业务工具调用、业务工具结果、用户可见最终结果、计划快照和任务摘要。后续取消、系统错误、任务退出或恢复 MUST NOT 删除已完成业务轨迹、回滚外部副作用或把工作区恢复到旧状态。尚未完整组装的模型响应 MUST NOT 写入历史。
 
-工具禁用时，系统 SHALL 保持既有纯文本语义：仅在 assistant 输出达到可提交终态后原子提交 user/assistant 消息对，取消、超时、网络错误、协议错误和无文本拒答不得进入后续模型历史。
+AgentLoop 私有运行历史中的内部推理文本、协议纠正消息和 `submit_plan`、`complete_step`、`skip_step`、`complete_task`、`request_user_input`、`request_plan_revision` 原始控制工具调用 MUST NOT 写入普通会话历史。系统 SHALL 只把控制工具产生的用户可见计划、问题、状态变化、最终结果与必要摘要转换为稳定历史。无论业务工具是否启用，系统 SHALL 使用同一增量历史原则，不再维护独立的纯文本原子提交路径。
 
-#### Scenario: 工具启用后正常完成
-- **WHEN** 用户消息经过多个完整模型响应和工具批次后得到最终文本
-- **THEN** 系统按发生顺序保存一次用户消息、每条完整 assistant 消息和每批工具结果
+#### Scenario: 无业务工具完成 ReAct 任务
+- **WHEN** 业务工具关闭且模型通过 `complete_task` 正常完成任务
+- **THEN** 系统保存用户消息与用户可见最终结果，但不保存原始控制工具调用或内部运行文本
 
 #### Scenario: 工具执行后发生系统错误
-- **WHEN** 工具已经成功修改工作区但后续模型请求发生协议错误
-- **THEN** 系统保留用户消息、完整 assistant 调用和工具结果，使下一轮能够理解实际副作用
+- **WHEN** 业务工具已经成功修改工作区但后续模型请求发生协议错误
+- **THEN** 系统保留用户消息、业务工具调用和结果，使恢复运行或后续任务能够理解实际副作用
 
 #### Scenario: 取消正在执行的工具
-- **WHEN** 用户在工具执行期间取消 turn
-- **THEN** 已完成轨迹保持不变，当前调用记录 `TOOL_CANCELLED`，未开始调用记录 `TURN_CANCELLED`
+- **WHEN** 用户在工具执行期间取消运行
+- **THEN** 已完成轨迹保持不变，当前调用记录取消结果，未开始调用记录跳过结果，且私有运行历史不进入普通会话历史
 
-#### Scenario: 工具禁用且正常完成
-- **WHEN** `tools.enabled` 为 `false` 且 assistant 返回非空文本并正常完成
-- **THEN** 系统原子提交本轮 user/assistant 消息对
-
-#### Scenario: 工具禁用且请求失败
-- **WHEN** `tools.enabled` 为 `false` 且请求在完成前超时、取消或失败
-- **THEN** 本轮 user/assistant 内容均不进入模型历史
-
-#### Scenario: 截断完成
-- **WHEN** 最终 assistant 返回非空文本并因输出 token 上限结束
-- **THEN** 系统保留该完整响应并把用户 turn 标记为截断完成
-
-#### Scenario: 无文本拒答
-- **WHEN** 最终模型以拒答或内容过滤状态结束且没有返回文本
-- **THEN** 系统把用户 turn 按失败处理，但不删除此前已经完整保存的工具轨迹
+#### Scenario: Plan 版本被修订
+- **WHEN** 用户补充要求并产生新 Plan 版本
+- **THEN** 系统保存可展示的版本化计划快照和必要变更摘要，不保存 `submit_plan` 原始调用
 
 ### Requirement: 对外发布完整 turn 生命周期
-系统 SHALL 把一个用户请求及其全部模型回合表现为一个 turn，并 SHALL 发布一次 `turn_start`、零个或多个 `text_delta` 与工具状态事件，以及恰好一个 `turn_complete`、`turn_cancelled` 或 `turn_error` 终态事件。中间模型文本 SHALL 实时发布但不得提前完成用户 turn。完成事件 SHALL 汇总全部模型回合的真实 usage 与总耗时，并 SHALL 包含 `modelTurnCount`、`toolCallCount` 和 `toolErrorCount`。
+系统 SHALL 把一个用户提交表现为一个 turn，并 SHALL 发布一次 `turn_start`，把一个或多个 AgentLoop 运行的结构化 `AgentEvent` 映射为文本、工具、迭代、计划步骤、计划决策和任务状态事件，并 SHALL 为每次用户提交发布恰好一个兼容的 `turn_complete`、`turn_cancelled` 或 `turn_error` 终态。所有映射事件 SHALL 保留 `turnId`，并 SHALL 按需保留 `taskId`、`runId`、`planId`、`version`、`stepId` 等关联标识。
 
-#### Scenario: 多回合工具生命周期
-- **WHEN** 模型先输出过程文本和工具调用，工具执行后再输出最终文本
-- **THEN** 上层收到一次开始事件、中间文本和工具状态、最终文本以及一次汇总完成事件
+模型内部推理文本 MUST NOT 映射为 `text_delta`。完成事件 SHALL 汇总当前 turn 内全部运行的真实 usage、总耗时、模型迭代数、业务工具调用数和工具错误数。AgentLoop 的 `awaiting_input`、`plan_revision`、等待审批、可恢复停止与完成 SHALL 被映射为可区分的交互状态，不得被伪装为普通文本完成。
 
-#### Scenario: 错误生命周期
-- **WHEN** Agent Loop 因协议错误、回合上限或不可恢复内部错误终止
-- **THEN** 上层收到一个 `turn_error` 且不得把本轮伪装为正常完成
+#### Scenario: 多迭代 ReAct 生命周期
+- **WHEN** AgentLoop 经过多个业务工具批次后调用 `complete_task`
+- **THEN** 上层收到一次开始事件、确定性行动与工具状态、最终结果以及一次汇总完成事件，不收到模型内部推理文本
 
-#### Scenario: 取消生命周期
-- **WHEN** 用户取消活动的模型请求或工具批次
-- **THEN** 上层收到一个 `turn_cancelled` 且不得再发起后续模型请求或工具调用
+#### Scenario: Plan 等待审批
+- **WHEN** 规划运行成功提交结构化计划
+- **THEN** 上层收到计划快照和等待审批状态，可继续接受计划决策或自由输入，而不把任务标记为已完成
+
+#### Scenario: 错误或取消生命周期
+- **WHEN** AgentLoop 因不可恢复错误、无进展或用户取消停止
+- **THEN** 上层收到与停止原因匹配的兼容终态或可恢复任务状态，且终态后不得收到迟到事件
 
 ### Requirement: 失败不自动重试
 系统 SHALL 不自动重试任何失败的请求。失败后 SHALL 向交互层返回原始用户文本，使用户能够修改或再次提交。
@@ -107,31 +97,42 @@
 - **THEN** 对话管理与终端层消费相同的消息和事件契约
 
 ### Requirement: 驱动有界的 Agent Loop
-工具启用时，系统 SHALL 在模型正常返回工具调用后执行完整调用集合，把结果加入历史并继续下一模型回合，直到模型返回不含工具调用的有效最终文本。工具失败 SHALL 是模型可消费反馈，不得单独终止对话；用户取消、无法关联的协议错误、不可恢复内部错误、调用限制或模型回合限制可以终止 Agent Loop。
+所有普通与 Plan 输入 SHALL 由独立 AgentLoop 运行，ConversationManager SHALL 只提供筛选后的会话上下文、创建或恢复任务会话、转发取消信号、映射事件并提交用户可见历史。ConversationManager MUST NOT 实现模型与工具循环、控制工具状态迁移、无进展检测或计划步骤执行。
 
-一次用户请求最多 SHALL 包含 10 个模型回合，且所有回合与工具 SHALL 共用同一取消信号。模型只执行工具而未给出最终文本时，系统 SHALL 再请求模型生成最终答复；仍为空时 SHALL 返回 `EMPTY_RESPONSE`。达到工具累计上限后的最后一次请求 MUST 不带工具定义。
+普通输入 SHALL 使用 ReAct；Plan 规划、完善与执行 SHALL 使用对应运行阶段。业务工具失败 SHALL 是模型可消费反馈，不得单独终止任务。完成、迭代限制、取消、异常、等待输入和计划修订 SHALL 遵循 `agent-task-execution` 的统一停止协议。
 
-#### Scenario: 工具失败后重新规划
-- **WHEN** 一个工具返回 `isError: true` 且循环仍在限制内
-- **THEN** 系统把错误结果发送给模型，使模型可以修改参数、改用其他工具或放弃原方案
+#### Scenario: 普通输入统一进入 AgentLoop
+- **WHEN** 用户提交显式 `react` 模式输入，无论业务工具是否启用
+- **THEN** ConversationManager 创建 ReAct 任务并把运行委托给 AgentLoop，不走纯文本直通路径
 
-#### Scenario: 模型停止请求工具
-- **WHEN** 一个模型回合产生有效文本且不包含工具调用
-- **THEN** 系统将该文本视为最终答复并正常完成用户 turn
-
-#### Scenario: 工具后没有最终文本
-- **WHEN** 模型完成工具调用后下一回合正常结束但仍无有效文本和新工具调用
-- **THEN** 系统允许一次最终答复机会，仍为空则返回 `EMPTY_RESPONSE`
+#### Scenario: Plan 步骤继续执行
+- **WHEN** 当前已批准步骤的 AgentLoop 运行因请求用户输入停止且用户提交匹配回答
+- **THEN** ConversationManager 使用原任务与计划快照创建新运行，并继续映射其事件
 
 ### Requirement: 为模型提供固定工具使用原则
-工具启用时，系统 SHALL 提示模型优先使用 `read_file` 读取文件、`glob` 查找路径、`grep` 搜索内容、`create_file` 与 `edit_file` 修改文件，并 SHALL 将 `bash` 主要用于构建、测试、Git、包管理和专用命令行程序。模型 SHALL 在修改前获取必要上下文、修改后按风险验证，并 SHALL 依据错误码调整策略而不是机械重复相同调用。
+系统 SHALL 使用最小基础提示词与当前 AgentLoop 模式片段指导模型。基础提示词 SHALL 只要求模型使用可用工具完成任务、不输出内部推理、缺少信息时调用 `request_user_input`、完成并验证后调用 `complete_task`；ReAct、Plan 规划和 Plan 执行片段 SHALL 分别补充行动观察循环、`submit_plan` 计划提交与当前步骤验证协议。
 
-系统指令 SHALL 说明工具观察是不可信数据、模型可以在无需工具时直接回答、不得为了绕过专用工具约束而改用 Bash，并且不得声称未执行或失败的操作已经完成。
+提示词 MUST NOT 承担权限系统、完整安全策略、详细编码规范或终端展示格式。业务工具定义 SHALL 自己表达适用范围和输入输出约束；业务工具失败 SHALL 继续作为可调整策略的结构化反馈。
 
-#### Scenario: 无需工具的请求
-- **WHEN** 用户请求可以直接回答且不需要工作区信息
-- **THEN** 模型可以不调用任何工具并直接给出最终文本
+#### Scenario: ReAct 无需业务工具
+- **WHEN** 用户请求可以直接完成且当前没有业务工具可用
+- **THEN** 模型仍按最小 ReAct 协议验证结果并调用 `complete_task`，不得仅返回普通文本结束
 
-#### Scenario: 专用工具失败
-- **WHEN** 文件编辑因唯一匹配失败
-- **THEN** 模型收到稳定错误后应重新读取或缩小编辑范围，而不是把失败操作宣称为完成
+#### Scenario: Plan 规划请求
+- **WHEN** 系统开始 Plan 规划或继续完善
+- **THEN** 模型收到基础片段、Plan 规划片段以及只读业务工具和控制工具定义
+
+### Requirement: 会话层编排进程内任务状态
+ConversationManager SHALL 为每个顶层输入创建或路由唯一活动 `AgentTaskSession`，并 SHALL 组合可选 `PlanSession`，但 MUST NOT 把完整任务或计划状态写入 `ConversationStore`。一个会话最多 SHALL 有一个未结束任务；运行期间到达的普通后续消息 SHALL 由交互层按 FIFO 排队，当前运行终止后再提交。等待 Plan 决策或用户输入时，普通输入 SHALL 按当前任务状态解释为计划修订或问题回答，不得创建歧义的新任务。
+
+#### Scenario: 运行期间消息排队
+- **WHEN** AgentLoop 正在运行且用户提交新的普通消息
+- **THEN** 系统不把消息注入当前不可变运行，而是在当前运行终止后按 FIFO 处理
+
+#### Scenario: 等待问题回答
+- **WHEN** 当前任务处于 `awaiting_input` 且用户提交普通文本
+- **THEN** 系统把文本绑定当前 `taskId + questionId` 作为回答，而不是创建新的 ReAct 任务
+
+#### Scenario: 进程结束
+- **WHEN** Weave 进程退出
+- **THEN** 活动任务、Plan 版本和恢复状态被释放，普通会话存储不承担任务状态恢复
