@@ -6,6 +6,7 @@ import { displayWidth, truncateDisplay } from './display-width.js';
 import { composerViewport, calculateLayout } from './layout.js';
 import { renderMarkdown } from './markdown-renderer.js';
 import type { TranscriptTurn, TuiState } from './tui-state.js';
+import { decisionOptions } from './task-input.js';
 import { visibleViewportLines, type ViewportState } from './viewport.js';
 
 const DOG = [' / \\__', '(    @\\___', ' /         O', '/   (_____/', '/_____/   U'];
@@ -32,8 +33,8 @@ export function WeaveView(props: WeaveViewProps): React.JSX.Element {
   const contentWidth = Math.max(1, props.columns - 2);
   const layout = calculateLayout(props.rows, props.state.composer, props.columns, props.state.queuedMessages.length);
   const transcriptRows = useMemo(
-    () => props.transcriptRows ?? formatTranscript(props.state.transcript, contentWidth, now),
-    [contentWidth, props.state.transcript, props.transcriptRows, spinnerTick],
+    () => props.transcriptRows ?? formatTranscript(props.state.transcript, contentWidth, now, props.state.taskDecision, props.state.selectedDecision),
+    [contentWidth, props.state.transcript, props.state.taskDecision, props.state.selectedDecision, props.transcriptRows, spinnerTick],
   );
   const visible = visibleViewportLines(transcriptRows, layout.transcriptHeight, props.viewport);
   const composer = composerViewport(
@@ -88,7 +89,7 @@ export function WeaveView(props: WeaveViewProps): React.JSX.Element {
   );
 }
 
-export function formatTranscript(turns: readonly TranscriptTurn[], width = 78, now = performance.now()): readonly DisplayRow[] {
+export function formatTranscript(turns: readonly TranscriptTurn[], width = 78, now = performance.now(), decision?: import('./task-input.js').TaskDecision, selectedDecision = 0): readonly DisplayRow[] {
   const rows: DisplayRow[] = [];
   for (const turn of turns) {
     rows.push(...wrapStyledSpans(
@@ -106,6 +107,15 @@ export function formatTranscript(turns: readonly TranscriptTurn[], width = 78, n
             key: `${turn.turnId}:tool:${activity.callId}`,
             spans: [{ text: `  ${toolMarker(activity.status)} ${activity.toolName} · ${toolSummary(activity)}`, style: toolStyle(activity.status) }],
           });
+          return;
+        }
+        if (activity.type === 'plan') {
+          rows.push(...planRows(turn.turnId, activity.plan, width, activityIndex));
+          return;
+        }
+        if (activity.type === 'task') {
+          const stats = activity.runCount === undefined ? '' : ` · 累计 ${activity.runCount} 次运行 / ${activity.totalIterations ?? 0} 次迭代`;
+          rows.push({ key: `${turn.turnId}:task:${activityIndex}`, spans: [{ text: `  ${activity.summary}${stats}`, style: { color: 'yellow' } }] });
           return;
         }
         const answerRows = renderMarkdown(activity.text, {
@@ -132,7 +142,32 @@ export function formatTranscript(turns: readonly TranscriptTurn[], width = 78, n
     }
     rows.push({ key: `${turn.turnId}:blank`, spans: [{ text: '' }] });
   }
+  if (decision !== undefined) {
+    rows.push({ key: 'task-decision', spans: decisionOptions(decision).flatMap((option, index) => [
+      { text: `${index === selectedDecision ? '> ' : '  '}${option}`, style: index === selectedDecision ? { color: 'cyan', bold: true } : { dimColor: true } },
+      ...(index === decisionOptions(decision).length - 1 ? [] : [{ text: '   ' }]),
+    ]) });
+  }
   return rows;
+}
+
+function planRows(turnId: string, plan: import('../shared/types.js').Plan, width: number, activityIndex: number): readonly DisplayRow[] {
+  const lines = [
+    `计划 v${plan.version}：${plan.goal}`,
+    `任务标准：${plan.successCriteria.join('；')}`,
+    ...plan.steps.map((step, index) => {
+      const dependencies = step.dependencies.length === 0 ? '无' : step.dependencies.join(', ');
+      const evidence = step.evidence.length === 0 ? '' : `；证据：${step.evidence.join('；')}`;
+      return `${index + 1}. [${step.status}] ${step.description}；依赖：${dependencies}；标准：${step.successCriteria.join('；')}${evidence}`;
+    }),
+  ];
+  return lines.flatMap((line, index) => wrapStyledSpans(
+    [{ text: line, style: index === 0 ? { bold: true, color: 'cyan' } : undefined }],
+    width,
+    `${turnId}:plan:${activityIndex}:${index}`,
+    [{ text: index === 0 ? '◆ ' : '  ' }],
+    [{ text: '  ' }],
+  ));
 }
 
 function toolMarker(status: Extract<TranscriptTurn['activities'][number], { type: 'tool' }>['status']): string {
@@ -199,18 +234,40 @@ function queueSummary(state: TuiState, width: number): string {
 }
 
 function statusText(state: TuiState, viewport: ViewportState, now: number): string {
-  if (!viewport.follow) return `正在查看上文 · 新增 ${viewport.unreadRows} 行 · Ctrl+End 返回底部`;
-  if (state.feedback?.startsWith('再按一次退出')) return state.feedback;
-  if (state.queueStatus === 'paused' && state.queuedMessages.length > 0) return '队列已暂停 · Enter 继续发送';
+  const mode = taskModeText(state);
+  if (!viewport.follow) return `${mode} · 正在查看上文 · 新增 ${viewport.unreadRows} 行 · Ctrl+End 返回底部`;
+  if (state.feedback?.startsWith('再按一次退出')) return `${mode} · ${state.feedback}`;
+  if (state.queueStatus === 'paused' && state.queuedMessages.length > 0) return `${mode} · 队列已暂停 · Enter 继续发送`;
   if (state.activeTurnId !== undefined) {
     const turn = state.transcript.find((candidate) => candidate.turnId === state.activeTurnId);
     if (turn !== undefined) {
       const elapsed = formatDuration(Math.max(0, now - turn.startedAt));
-      return state.streamStatus === 'waiting' ? `等待响应 · ${elapsed}` : `生成中 · ${elapsed}`;
+      return state.streamStatus === 'waiting' ? `${mode} · 等待响应 · ${elapsed}` : `${mode} · 生成中 · ${elapsed}`;
     }
   }
-  return state.feedback ?? '就绪';
+  return state.feedback === undefined ? mode : `${mode} · ${state.feedback}`;
 }
+
+function taskModeText(state: TuiState): string {
+  const display = state.taskDisplay;
+  if (display.mode === 'react') {
+    if (display.phase === 'running') return 'ReAct · 运行中';
+    if (display.phase === 'awaiting_input') return 'ReAct · 等待输入';
+    if (display.phase === 'stopped') return 'ReAct · 已停止';
+    if (display.phase === 'cancelled') return 'ReAct · 已取消';
+    return 'ReAct · 就绪';
+  }
+  if (display.phase === 'planning') return 'Plan · 规划中';
+  if (display.phase === 'awaiting_approval') return 'Plan · 待确认';
+  if (display.phase === 'awaiting_input') return 'Plan · 等待输入';
+  if (display.phase === 'stopped') return 'Plan · 已停止';
+  if (display.phase === 'cancelled') return 'Plan · 已取消';
+  if (display.currentStep !== undefined && display.totalSteps !== undefined) {
+    return `Plan · 执行 ${display.currentStep}/${display.totalSteps}`;
+  }
+  return 'Plan · 执行中';
+}
+
 
 function turnLabel(turn: TranscriptTurn): string {
   if (turn.phase === 'completed') return '完成';

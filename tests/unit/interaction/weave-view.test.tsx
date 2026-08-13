@@ -23,7 +23,7 @@ describe('WeaveView', () => {
     expect(frame).toContain('C:\\Code\\Weave');
     expect(frame).toContain('openai-responses / gpt-test');
     expect(frame).toContain('>');
-    expect(frame).toContain('就绪');
+    expect(frame).toContain('ReAct · 就绪');
     expect(frame).not.toMatch(/费用|上下文|权限|Agents|MCP|\/model|\/clear/);
   });
 
@@ -100,5 +100,55 @@ describe('WeaveView', () => {
     expect(frame).toContain('↷ edit_file · 未执行 (PRIOR_WRITE_FAILED)');
     expect(frame).toContain('完成 · 2 回合 · 2 工具 · 1 错误');
     expect(frame).not.toContain('前序写入失败');
+  });
+
+  it('在唯一 transcript 与状态栏显示 Plan 详情和三个固定选项', () => {
+    const plan = { planId: 'p1', version: 2, goal: '交付功能', successCriteria: ['全量测试通过'], steps: [
+      { id: 's1', description: '实现核心', dependencies: [], successCriteria: ['单测通过'], status: 'completed' as const, evidence: ['unit ok'] },
+    ] };
+    let state = reduceTuiState(initialTuiState(), { type: 'turn_event', event: { type: 'turn_start', turnId: 'p', userText: '/plan 交付', startedAt: 0 } });
+    state = reduceTuiState(state, { type: 'turn_event', event: { type: 'plan_ready', turnId: 'p', taskId: 't1', plan } });
+    state = reduceTuiState(state, { type: 'turn_event', event: { type: 'turn_complete', turnId: 'p', status: 'completed', finishReason: 'stop', durationMs: 1 } });
+    const frame = render(<WeaveView {...baseProps} state={state} />).lastFrame() ?? '';
+    expect(frame).toContain('计划 v2：交付功能');
+    expect(frame).toContain('单测通过');
+    expect(frame).toContain('unit ok');
+    expect(frame).toContain('执行计划');
+    expect(frame).toContain('继续完善');
+    expect(frame).toContain('退出任务');
+    expect(frame).toContain('Plan · 待确认');
+  });
+
+  it('在现有单行状态栏持续显示 Plan 阶段与执行进度', () => {
+    const plan = { planId: 'p1', version: 1, goal: '交付', successCriteria: ['通过'], steps: [
+      { id: 's1', description: '实现', dependencies: [], successCriteria: ['通过'], status: 'pending' as const, evidence: [] },
+      { id: 's2', description: '验证', dependencies: ['s1'], successCriteria: ['通过'], status: 'pending' as const, evidence: [] },
+    ] };
+    let state = reduceTuiState(initialTuiState(), { type: 'turn_event', event: {
+      type: 'turn_start', turnId: 'draft', userText: '交付', startedAt: 0, taskMode: 'plan', taskPhase: 'plan_draft',
+    } });
+    let frame = render(<WeaveView {...baseProps} state={state} now={1000} />).lastFrame() ?? '';
+    expect(frame).toContain('Plan · 规划中 · 等待响应');
+
+    state = reduceTuiState(state, { type: 'turn_event', event: { type: 'plan_ready', turnId: 'draft', taskId: 'task', plan } });
+    state = reduceTuiState(state, { type: 'turn_event', event: { type: 'turn_complete', turnId: 'draft', status: 'completed', finishReason: 'stop', durationMs: 1 } });
+    state = reduceTuiState(state, { type: 'turn_event', event: {
+      type: 'turn_start', turnId: 'execute', userText: '执行', startedAt: 2, taskMode: 'plan', taskPhase: 'plan_execute',
+    } });
+    state = reduceTuiState(state, { type: 'turn_event', event: {
+      type: 'plan_step', turnId: 'execute', taskId: 'task', planId: 'p1', version: 1, stepId: 's2', status: 'running',
+    } });
+    frame = render(<WeaveView {...baseProps} state={state} now={1000} />).lastFrame() ?? '';
+    expect(frame).toContain('Plan · 执行 2/2');
+  });
+
+  it('滚动提示和反馈只作为模式后缀', () => {
+    let state = reduceTuiState(initialTuiState(), { type: 'turn_event', event: {
+      type: 'turn_start', turnId: 'plan', userText: '交付', startedAt: 0, taskMode: 'plan', taskPhase: 'plan_draft',
+    } });
+    state = reduceTuiState(state, { type: 'set_feedback', value: '短暂提示' });
+    const viewport = { ...initialViewportState(), follow: false, unreadRows: 3 };
+    const frame = render(<WeaveView {...baseProps} viewport={viewport} state={state} />).lastFrame() ?? '';
+    expect(frame).toContain('Plan · 规划中 · 正在查看上文');
   });
 });

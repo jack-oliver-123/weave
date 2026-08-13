@@ -24,14 +24,14 @@ describe('三协议工具闭环', () => {
     const transport = vi.fn(async (request: any) => {
       turn += 1;
       if (turn === 1) {
-        expect(request.tools).toHaveLength(6);
+        expect(request.tools).toHaveLength(8);
         expect(request.toolChoice).toEqual({ type: 'auto' });
         return nativeStream(anthropicCalls());
       }
       const results = request.messages.at(-1)?.content;
       expect(results).toHaveLength(4);
       expect(results.map((item: any) => item.is_error)).toEqual([false, true, false, false]);
-      return nativeStream(anthropicText('全部完成。'));
+      return nativeStream(anthropicControl('complete_task', { result: '全部完成。', verificationSummary: '文件已复查。' }));
     });
     await verifyLoop(new AnthropicMessagesClient(profile('anthropic-messages'), { transport, createCallId: ids() }), transport);
   });
@@ -41,14 +41,14 @@ describe('三协议工具闭环', () => {
     const transport = vi.fn(async (request: any) => {
       turn += 1;
       if (turn === 1) {
-        expect(request.tools).toHaveLength(6);
+        expect(request.tools).toHaveLength(8);
         expect(request.toolChoice).toBe('auto');
         return nativeStream(chatCalls());
       }
       const results = request.messages.filter((item: any) => item.role === 'tool');
       expect(results).toHaveLength(4);
       expect(results.map((item: any) => JSON.parse(item.content).isError)).toEqual([false, true, false, false]);
-      return nativeStream([{ choices: [{ index: 0, delta: { content: '全部完成。' }, finish_reason: 'stop' }] }]);
+      return nativeStream([{ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'complete', type: 'function', function: { name: 'complete_task', arguments: JSON.stringify({ result: '全部完成。', verificationSummary: '文件已复查。' }) } }] }, finish_reason: 'tool_calls' }] }]);
     });
     await verifyLoop(new OpenAIChatCompletionsClient(profile('openai-chat-completions'), { transport, createCallId: ids() }), transport);
   });
@@ -58,7 +58,7 @@ describe('三协议工具闭环', () => {
     const transport = vi.fn(async (request: any) => {
       turn += 1;
       if (turn === 1) {
-        expect(request.tools).toHaveLength(6);
+        expect(request.tools).toHaveLength(8);
         expect(request.toolChoice).toBe('auto');
         return nativeStream(responsesCalls());
       }
@@ -67,7 +67,9 @@ describe('三协议工具闭环', () => {
       expect(results.map((item: any) => JSON.parse(item.output).isError)).toEqual([false, true, false, false]);
       return nativeStream([
         { type: 'response.created', response: {} },
-        { type: 'response.output_text.delta', delta: '全部完成。' },
+        { type: 'response.output_item.added', item: { type: 'function_call', id: 'complete-item', call_id: 'complete', name: 'complete_task', arguments: '' } },
+        { type: 'response.function_call_arguments.done', item_id: 'complete-item', arguments: JSON.stringify({ result: '全部完成。', verificationSummary: '文件已复查。' }) },
+        { type: 'response.output_item.done', item: { type: 'function_call', id: 'complete-item', call_id: 'complete', name: 'complete_task', arguments: JSON.stringify({ result: '全部完成。', verificationSummary: '文件已复查。' }) } },
         { type: 'response.completed', response: {} },
       ]);
     });
@@ -85,7 +87,7 @@ async function verifyLoop(client: LlmClient, transport: ReturnType<typeof vi.fn>
     maxTokens: 100,
     tools: { definitions: registry.listDefinitions(), scheduler: new ToolCallScheduler(registryDispatcher(registry)) },
   });
-  const events = await collect(manager.submit({ content: '读取、创建并复查文件' }));
+  const events = await collect(manager.submit({ mode: 'react', content: '读取、创建并复查文件' }));
   expect(events.at(-1)).toMatchObject({
     type: 'turn_complete', modelTurnCount: 2, toolCallCount: 4, toolErrorCount: 1,
   });
@@ -126,6 +128,17 @@ function anthropicText(text: string): unknown[] {
     { type: 'content_block_start', index: 0, content_block: { type: 'text', text } },
     { type: 'content_block_stop', index: 0 },
     { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } },
+    { type: 'message_stop' },
+  ];
+}
+
+function anthropicControl(name: string, input: unknown): unknown[] {
+  return [
+    { type: 'message_start', message: { usage: { input_tokens: 1 } } },
+    { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'complete', name, input: {} } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 1 } },
     { type: 'message_stop' },
   ];
 }

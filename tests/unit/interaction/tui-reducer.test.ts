@@ -153,4 +153,85 @@ describe('TUI reducer', () => {
     state = reduceTuiState(state, { type: 'undo_queue' });
     expect(state).toMatchObject({ queuedMessages: ['第一条'], composer: '第二条\n\n当前草稿' });
   });
+
+  it('在同一 transcript 保存 Plan、步骤进度与审批决策', () => {
+    const plan = { planId: 'p1', version: 1, goal: '交付', successCriteria: ['全量通过'], steps: [
+      { id: 's1', description: '实现', dependencies: [], successCriteria: ['单测通过'], status: 'pending' as const, evidence: [] },
+    ] };
+    let state = reduceTuiState(initialTuiState(), { type: 'turn_event', event: start });
+    state = reduceTuiState(state, { type: 'turn_event', event: { type: 'plan_ready', turnId: 't1', taskId: 'task-1', plan } });
+    state = reduceTuiState(state, { type: 'turn_event', event: { type: 'task_state', turnId: 't1', taskId: 'task-1', state: 'awaiting_approval', summary: '等待审批' } });
+    state = reduceTuiState(state, { type: 'turn_event', event: { type: 'turn_complete', turnId: 't1', status: 'completed', finishReason: 'stop', durationMs: 1 } });
+    expect(state.taskDecision).toEqual({ kind: 'plan_approval', taskId: 'task-1', planId: 'p1', version: 1 });
+    expect(state.transcript[0]?.activities).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'plan', plan })]));
+  });
+
+  it('从结构化 turn 事件投影 ReAct 与 Plan 模式阶段，不解析转录文本', () => {
+    let state = initialTuiState();
+    expect(state.taskDisplay).toEqual({ mode: 'react', phase: 'idle' });
+
+    state = reduceTuiState(state, { type: 'turn_event', event: {
+      type: 'turn_start', turnId: 'p1', userText: '这里没有命令前缀', startedAt: 0,
+      taskMode: 'plan', taskPhase: 'plan_draft',
+    } });
+    expect(state.taskDisplay).toEqual({ mode: 'plan', phase: 'planning' });
+
+    const plan = { planId: 'plan-1', version: 1, goal: '交付', successCriteria: ['通过'], steps: [
+      { id: 's1', description: '第一步', dependencies: [], successCriteria: ['通过'], status: 'pending' as const, evidence: [] },
+      { id: 's2', description: '第二步', dependencies: ['s1'], successCriteria: ['通过'], status: 'pending' as const, evidence: [] },
+    ] };
+    state = reduceTuiState(state, { type: 'turn_event', event: { type: 'plan_ready', turnId: 'p1', taskId: 'task-1', plan } });
+    expect(state.taskDisplay).toMatchObject({ mode: 'plan', phase: 'awaiting_approval', totalSteps: 2 });
+    state = reduceTuiState(state, { type: 'turn_event', event: { type: 'turn_complete', turnId: 'p1', status: 'completed', finishReason: 'stop', durationMs: 1 } });
+    expect(state.taskDisplay).toMatchObject({ mode: 'plan', phase: 'awaiting_approval' });
+
+    state = reduceTuiState(state, { type: 'turn_event', event: {
+      type: 'turn_start', turnId: 'p2', userText: '交付', startedAt: 2, taskMode: 'plan', taskPhase: 'plan_execute',
+    } });
+    state = reduceTuiState(state, { type: 'turn_event', event: {
+      type: 'plan_step', turnId: 'p2', taskId: 'task-1', planId: 'plan-1', version: 1, stepId: 's2', status: 'running',
+    } });
+    expect(state.taskDisplay).toMatchObject({ mode: 'plan', phase: 'executing', currentStep: 2, totalSteps: 2 });
+
+    state = reduceTuiState(state, { type: 'turn_event', event: {
+      type: 'task_state', turnId: 'p2', taskId: 'task-1', state: 'awaiting_input', summary: '等待输入',
+    } });
+    expect(state.taskDisplay).toMatchObject({ mode: 'plan', phase: 'awaiting_input', resumePhase: 'executing' });
+    state = reduceTuiState(state, { type: 'turn_event', event: { type: 'turn_complete', turnId: 'p2', status: 'completed', finishReason: 'stop', durationMs: 1 } });
+    expect(state.taskDisplay).toMatchObject({ mode: 'plan', phase: 'awaiting_input' });
+  });
+
+  it('Plan 完成或退出后回落到 ReAct 就绪，停止与取消则保留模式', () => {
+    const planStart: TurnEvent = {
+      type: 'turn_start', turnId: 'p', userText: '执行', startedAt: 0, taskMode: 'plan', taskPhase: 'plan_execute',
+    };
+    let completed = reduceTuiState(initialTuiState(), { type: 'turn_event', event: planStart });
+    completed = reduceTuiState(completed, { type: 'turn_event', event: { type: 'turn_complete', turnId: 'p', status: 'completed', finishReason: 'stop', durationMs: 1 } });
+    expect(completed.taskDisplay).toEqual({ mode: 'react', phase: 'idle' });
+
+    let stopped = reduceTuiState(initialTuiState(), { type: 'turn_event', event: planStart });
+    stopped = reduceTuiState(stopped, { type: 'turn_event', event: { type: 'task_state', turnId: 'p', taskId: 'task', state: 'stopped', summary: '已停止' } });
+    expect(stopped.taskDisplay).toMatchObject({ mode: 'plan', phase: 'stopped' });
+
+    let cancelled = reduceTuiState(initialTuiState(), { type: 'turn_event', event: planStart });
+    cancelled = reduceTuiState(cancelled, { type: 'turn_event', event: { type: 'turn_cancelled', turnId: 'p', durationMs: 1 } });
+    expect(cancelled.taskDisplay).toMatchObject({ mode: 'plan', phase: 'cancelled' });
+
+    let exited = reduceTuiState(initialTuiState(), { type: 'turn_event', event: planStart });
+    exited = reduceTuiState(exited, { type: 'turn_event', event: { type: 'task_state', turnId: 'p', taskId: 'task', state: 'exited', summary: '已退出' } });
+    expect(exited.taskDisplay).toEqual({ mode: 'react', phase: 'idle' });
+  });
+
+  it('ReAct 等待用户输入时不被兼容 turn 终态覆盖', () => {
+    let state = reduceTuiState(initialTuiState(), { type: 'turn_event', event: {
+      type: 'turn_start', turnId: 'r', userText: '需要输入', startedAt: 0, taskMode: 'react', taskPhase: 'react',
+    } });
+    state = reduceTuiState(state, { type: 'turn_event', event: {
+      type: 'task_state', turnId: 'r', taskId: 'task', state: 'awaiting_input', summary: '请补充',
+    } });
+    state = reduceTuiState(state, { type: 'turn_event', event: {
+      type: 'turn_complete', turnId: 'r', status: 'completed', finishReason: 'stop', durationMs: 1,
+    } });
+    expect(state.taskDisplay).toEqual({ mode: 'react', phase: 'awaiting_input' });
+  });
 });

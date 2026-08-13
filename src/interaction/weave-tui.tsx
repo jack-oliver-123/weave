@@ -15,6 +15,7 @@ import {
 import { initialTuiState, reduceTuiState, type TuiAction } from './tui-state.js';
 import { initialViewportState, reduceViewport } from './viewport.js';
 import { formatTranscript, WeaveView } from './weave-view.js';
+import { decisionAction, decisionOptions, parseTopLevelInput } from './task-input.js';
 
 export interface WeaveTuiProps extends AppPorts {
   readonly columns?: number;
@@ -42,8 +43,8 @@ export function WeaveTui(props: WeaveTuiProps): React.JSX.Element {
   const composerWidth = Math.max(1, columns - 6);
   const spinnerTick = state.streamStatus === 'waiting' ? Math.floor(now / 100) : -1;
   const transcriptRows = useMemo(
-    () => formatTranscript(state.transcript, contentWidth, now),
-    [contentWidth, state.transcript, spinnerTick],
+    () => formatTranscript(state.transcript, contentWidth, now, state.taskDecision, state.selectedDecision),
+    [contentWidth, state.transcript, state.taskDecision, state.selectedDecision, spinnerTick],
   );
   const viewportHeight = calculateLayout(rows, state.composer, columns, state.queuedMessages.length).transcriptHeight;
 
@@ -110,7 +111,13 @@ export function WeaveTui(props: WeaveTuiProps): React.JSX.Element {
         nextText = undefined;
         let terminalStatus: 'completed' | 'truncated' | 'refused' | 'cancelled' | 'error' | undefined;
         try {
-          for await (const event of props.conversation.submit({ content: submittedText })) {
+          const parsed = parseTopLevelInput(submittedText);
+          if (!parsed.ok) {
+            dispatch({ type: 'set_feedback', value: parsed.message });
+            terminalStatus = 'error';
+            continue;
+          }
+          for await (const event of props.conversation.submit({ mode: parsed.mode, content: parsed.content })) {
             dispatch({ type: 'turn_event', event });
             terminalStatus = terminalStatusOf(event) ?? terminalStatus;
             if (event.type === 'turn_error') syncComposerFromState(stateRef.current.composer);
@@ -131,6 +138,19 @@ export function WeaveTui(props: WeaveTuiProps): React.JSX.Element {
       submittingRef.current = false;
     }
   }, [dispatch, props.conversation, syncComposerFromState, updateComposer]);
+
+  const consumeAction = useCallback(async (action: import('../shared/types.js').TaskAction) => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    dispatch({ type: 'clear_task_decision' });
+    try {
+      for await (const event of props.conversation.dispatch(action)) dispatch({ type: 'turn_event', event });
+    } catch (error) {
+      dispatch({ type: 'set_feedback', value: error instanceof Error ? error.message : '任务操作失败。' });
+    } finally {
+      submittingRef.current = false;
+    }
+  }, [dispatch, props.conversation]);
 
   const sendPausedQueue = useCallback(() => {
     const draft = composerRef.current.value;
@@ -200,12 +220,38 @@ export function WeaveTui(props: WeaveTuiProps): React.JSX.Element {
       return;
     }
 
+    const taskDecision = stateRef.current.taskDecision;
+    if (taskDecision !== undefined && stateRef.current.activeTurnId === undefined && composerRef.current.value.length === 0) {
+      const options = decisionOptions(taskDecision);
+      if (key.upArrow || key.downArrow) {
+        const direction = key.upArrow ? -1 : 1;
+        dispatch({ type: 'select_decision', index: (stateRef.current.selectedDecision + direction + options.length) % options.length });
+        return;
+      }
+      if (key.return && !key.shift) {
+        if (taskDecision.kind === 'stopped' && stateRef.current.selectedDecision === 1) {
+          dispatch({ type: 'set_feedback', value: '请输入补充要求。' });
+          return;
+        }
+        void consumeAction(decisionAction(taskDecision, stateRef.current.selectedDecision));
+        return;
+      }
+    }
+
     const busy = submittingRef.current || stateRef.current.activeTurnId !== undefined || props.conversation.activeTurnId !== undefined;
     const result = applyComposerKey(composerRef.current, decoded.text, key, true, composerWidth);
     if (result.submitted !== undefined) {
       composerRef.current = { value: '', cursor: 0 };
       setCursor(0);
-      if (busy) {
+      const parsedSubmission = parseTopLevelInput(result.submitted);
+      if (busy && parsedSubmission.ok && parsedSubmission.mode === 'plan') {
+        dispatch({ type: 'set_feedback', value: '当前任务尚未结束，不能创建新的 Plan。' });
+        return;
+      }
+      if (taskDecision !== undefined && !busy) {
+        dispatch({ type: 'set_composer', value: '' });
+        void consumeAction(decisionAction(taskDecision, stateRef.current.selectedDecision, result.submitted));
+      } else if (busy) {
         dispatch({ type: 'queue_message', value: result.submitted });
       } else {
         dispatch({ type: 'set_composer', value: '' });

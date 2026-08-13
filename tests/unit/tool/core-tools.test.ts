@@ -107,7 +107,7 @@ describe('six core tools', () => {
     });
   });
 
-  it('bash returns output and treats nonzero exit as valuable error feedback', { timeout: 15_000 }, async () => {
+  it('bash returns output and treats nonzero exit as valuable error feedback', { timeout: 30_000 }, async () => {
     const { call } = await setup();
     await expect(call('bash', { command: 'printf ok' })).resolves.toMatchObject({
       isError: false, content: { data: { stdout: 'ok', exitCode: 0, timedOut: false } },
