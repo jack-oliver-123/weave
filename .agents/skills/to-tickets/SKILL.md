@@ -16,6 +16,8 @@ The issue tracker and triage label vocabulary should have been provided to you �
 
 Work from whatever is already in the conversation context. If the user passes a reference (a spec path, an issue number or URL) as an argument, fetch it and read its full body and comments.
 
+If the reference is an OpenSpec `tasks.md`, read `docs/agents/openspec-workflow.md` and every artifact for that change before continuing. Follow that workflow's **OpenSpec tasks 与 Tickets** and **发布 Tickets** sections as the authority for task coverage, `tasks.md` changes, publication, and retries. Treat the artifacts as canonical; Issues only mirror execution.
+
 ### 2. Explore the codebase (optional)
 
 If you have not already explored the codebase, do so to understand the current state of the code. Ticket titles and descriptions should use the project's domain glossary vocabulary, and respect ADRs in the area you're touching.
@@ -54,6 +56,8 @@ Ask the user:
 - Should any tickets be merged or split further?
 
 Iterate until the user approves the breakdown.
+
+Breakdown approval settles the plan; it does not authorize remote publication. For a real tracker, first perform read-only preflight of the target repository, required labels, and dependency mechanism. Stop and report any missing configuration before creating anything. Then show the exact title, body, labels, blocking edges, and OpenSpec task mapping for every Issue, and obtain a separate final confirmation immediately before publication.
 
 ### 5. Publish the tickets to the configured tracker
 
@@ -102,4 +106,4 @@ The end-to-end behaviour this ticket makes work, from the user's perspective —
 
 </issue-template>
 
-In either form, avoid specific file paths or code snippets — they go stale fast. Exception: if a prototype produced a snippet that encodes a decision more precisely than prose can (state machine, reducer, schema, type shape), inline it and note briefly that it came from a prototype. Trim to the decision-rich parts — not a working demo, just the important bits.
+In either form, avoid implementation file paths or code snippets — they go stale fast. OpenSpec canonical artifact paths are required source pointers. If a prototype produced a snippet that encodes a decision more precisely than prose can (state machine, reducer, schema, type shape), inline it and note briefly that it came from a prototype. Trim to the decision-rich parts — not a working demo, just the important bits.

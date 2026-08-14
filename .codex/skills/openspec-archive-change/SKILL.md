@@ -142,13 +142,29 @@ Archive a completed change in the experimental workflow.
    mv "<changeRoot>" "<planningHome.changesDir>/archive/<target-name>"
    ```
 
-6. **Display summary**
+6. **Sync the archived WIKI projection automatically**
+
+   After the archive move succeeds, refresh the local developer documentation projection from the archived OpenSpec artifacts. This is a deterministic part of the authorized archive operation and MUST NOT prompt for a second WIKI authorization.
+
+   From `planningHome.root`, run:
+   ```bash
+   npm run docs:link
+   python3 .codex/skills/wiki-sync/scripts/sync_wiki.py archive "<target-name>"
+   npm run docs:build
+   ```
+
+   If step 4 explicitly archived without syncing delta specs and unsynced deltas remain, replace the projection command with `python3 .codex/skills/wiki-sync/scripts/sync_wiki.py --allow-unsynced archive "<target-name>"`; the user's explicit archive-without-sync choice satisfies that flag's confirmation requirement. Do not pass the flag in any other case.
+
+   The OpenSpec archive is the source of truth and the WIKI is only an `@include`-based projection. If link setup, projection sync, include/navigation validation, or docs build fails, MUST NOT move the archived change back to active. Report that OpenSpec archive succeeded but WIKI projection failed, include the failed command and safe retry command, and stop before the success summary.
+
+7. **Display summary**
 
    Show archive completion summary including:
    - Change name
    - Schema that was used
    - Archive location
    - Whether specs were synced (if applicable)
+   - WIKI archive projection and docs build status
    - Note about any warnings (incomplete artifacts/tasks)
 
 **Output On Success**
@@ -160,6 +176,7 @@ Archive a completed change in the experimental workflow.
 **Schema:** <schema-name>
 **Archived to:** the archive path derived from `planningHome.changesDir`/<target-name>/
 **Specs:** <"✓ Synced to main specs" only if the step 4 verification passed; otherwise "No delta specs" or "Sync skipped">
+**WIKI:** ✓ Archived projection synced and docs build passed
 
 <"All artifacts complete. All tasks complete." — or, if archived with warnings, list them instead (e.g. "Archived with 2 incomplete tasks")>
 ```
@@ -178,3 +195,7 @@ Archive a completed change in the experimental workflow.
 - Existing CLI checks, resolved paths, prompts, and command contracts are unchanged
 - Artifact rules constrain only the specs being written and are never operation guidance
 - Never copy runtime context, operation guidance, or artifact-rule text verbatim into output files
+- Treat OpenSpec artifacts as the source of truth and WIKI pages as generated developer projections
+- Run archive WIKI projection and docs build automatically after a successful archive; do not create an active WIKI page
+- Archive authorization includes this local projection refresh and does not authorize unrelated documentation edits or remote operations
+- If WIKI projection fails after the move, preserve the archive and report partial completion instead of rolling back

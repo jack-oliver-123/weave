@@ -1,18 +1,20 @@
 ---
 name: wiki-sync
-description: "同步 OpenSpec 变更到 WIKI，并初始化或修复 docs/openspec 链接与 VitePress 文档入口。触发时机：变更创建（openspec new）或归档（openspec archive）后，或 WIKI 同步因文档链接、构建环境失败时。"
+description: "为开发者文档站生成 OpenSpec 归档投影，或修复已有 WIKI 的 docs/openspec 链接、include、导航和 VitePress 构建。正常流程仅由 OpenSpec archive 自动触发；不要在 new、propose、apply 或 verify 阶段创建 active WIKI。"
 ---
 
 # 同步 OpenSpec 变更到 WIKI
 
-OpenSpec 变更与 `docs/changes/` 下的 WIKI 页面必须保持同步。
+OpenSpec artifacts 是唯一事实来源。`docs/changes/` 下的 WIKI 页面只使用 `@include`、索引和导航为开发人员提供只读投影，不复制或改写 OpenSpec 正文。
 
 ## 触发时机
 
-| 操作 | 文档同步 |
+| 触发 | 文档同步 |
 |------|---------|
-| 创建新变更 | 创建 WIKI 页面到 `docs/changes/active/` |
-| 归档变更 | 移动 WIKI 页面到 `docs/changes/archive/` |
+| OpenSpec archive 已成功移动变更 | 自动创建或更新 `docs/changes/archive/` 投影，并验证构建 |
+| 用户明确要求修复已有 WIKI 故障 | 只修复目标链接、include、导航或构建问题 |
+
+`openspec new`、propose/ff 产物完成、Apply、Review 和 Verify 都不触发 active WIKI。OpenSpec 正文更新会通过 `@include` 直接反映，无需内容复制或额外同步。
 
 ## 确定性入口
 
@@ -20,11 +22,11 @@ OpenSpec 变更与 `docs/changes/` 下的 WIKI 页面必须保持同步。
 
 ```bash
 npm run docs:link
-python3 .codex/skills/wiki-sync/scripts/sync_wiki.py active <change-name>
 python3 .codex/skills/wiki-sync/scripts/sync_wiki.py archive <change-name-or-archive-name>
-python3 .codex/skills/wiki-sync/scripts/sync_wiki.py all
 npm run docs:build
 ```
+
+`all` 仅用于用户明确要求的全量故障修复，不属于正常归档流程。正常流程不得调用 `active`。
 
 `npm run docs:link` 必须先成功。同步脚本会生成或更新页面、索引和 Sidebar，并单独验证 delta specs、include 目标与导航一致性。同步完成后仍须执行 `npm run docs:build`。
 
@@ -41,16 +43,7 @@ npm run docs:build
 
 ## 工作流程
 
-### 模式一：新建变更同步
-
-1. **验证变更存在**：检查 `openspec/changes/{name}/` 目录。
-2. **创建 WIKI 页面**：在 `docs/changes/active/{name}/` 下创建 `index.md`，使用 VitePress 的 `@include` 指令引用 proposal、design、tasks 和 delta specs。项目通过 `docs/openspec` 链接访问根目录 `openspec`。
-3. **更新 Sidebar**：在 `docs/.vitepress/config.mts` 的“进行中”分组中添加条目。
-4. **更新索引**：同步 `docs/changes/index.md`。
-5. **验证 include**：检查页面中的每个 `@include` 目标文件存在。
-6. **输出完成摘要**。
-
-### 模式二：归档变更同步
+### 模式一：归档自动投影
 
 1. **验证归档变更存在**：在 `openspec/changes/archive/` 下查找匹配目录，支持完整名称或简短名称自动匹配日期前缀。
 2. **强制检查 delta specs**：
@@ -67,19 +60,18 @@ npm run docs:build
 7. **验证构建**：执行 `npm run docs:build`；构建通过后仍需保留 include 目标存在性检查结论。
 8. **输出完成摘要**。
 
+该模式由 `openspec-archive-change` 在归档目录移动成功后自动调用，不再次询问 WIKI 授权。若投影或构建失败，OpenSpec 仍保持已归档事实；报告 WIKI 未同步并保留可重试命令，不得自动把 change 移回 active。
+
+### 模式二：已有 WIKI 故障修复
+
+1. **确认修复范围**：只处理用户指出或构建实际报告的链接、include、导航或 VitePress 问题。
+2. **读取 OpenSpec**：从 active/archive 实际目录和 artifact 文件推导投影，不把 WIKI 内容反写为 OpenSpec。
+3. **最小修复**：运行目标范围的同步或链接自愈；只有用户明确要求全量修复时才运行 `all`。
+4. **双重验证**：单独验证 include/导航一致性并执行 `npm run docs:build`。
+
 ### WIKI 页面结构
 
 页面使用 VitePress frontmatter 和 include 指令引用 OpenSpec 变更文件。
-
-**Active 页面 frontmatter**：
-
-```yaml
----
-title: change-title
-status: active
-createdDate: YYYY-MM-DD
----
-```
 
 **Archive 页面 frontmatter**：
 
@@ -111,6 +103,8 @@ include 语法：
 ## Guardrails
 
 - 不修改 OpenSpec 原有文件，只创建或移动 WIKI 页面。
+- OpenSpec artifacts 是唯一事实来源；WIKI 不拥有需求、设计、任务或规格正文。
+- 正常流程只投影已归档 change，不为 active change 创建页面。
 - 使用相对路径的 `@include` 指令引用 OpenSpec 内容。
 - 操作前验证路径有效性；`docs/openspec` 只接受解析到仓库根目录 `openspec` 的符号链接或 Windows junction。
 - 替换损坏链接前必须确认链接路径和真实目标，只删除链接本身，禁止递归删除目标目录。
@@ -118,4 +112,4 @@ include 语法：
 - 未经用户明确允许，不得使用 `--allow-unsynced` 绕过同步检查。
 - 归档页面禁止引用归档前的 `openspec/changes/{name}/` 路径。
 - VitePress 构建成功不代表 include 有效，必须单独检查 include 目标文件。
-- `docs/changes/index.md`、`docs/.vitepress/config.mts`、`docs/changes/` 与 `openspec/changes/` 必须保持一致。
+- `docs/changes/index.md`、`docs/.vitepress/config.mts` 和 `docs/changes/archive/` 必须与 `openspec/changes/archive/` 保持一致。
