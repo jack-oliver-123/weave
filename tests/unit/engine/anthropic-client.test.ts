@@ -21,7 +21,7 @@ const start = {
 describe('AnthropicMessagesClient', () => {
   it('按严格时序转换多个文本块、心跳、完成原因和真实 usage', async () => {
     const transport = vi.fn(async () => nativeStream([
-      start,
+      { type: 'message_start', message: { usage: { input_tokens: 11, cache_read_input_tokens: 6, cache_creation_input_tokens: 4 } } },
       { type: 'ping' },
       { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
       { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '你' } },
@@ -42,15 +42,31 @@ describe('AnthropicMessagesClient', () => {
       {
         type: 'stream_complete',
         finishReason: 'max_tokens',
-        usage: { inputTokens: 11, outputTokens: 7 },
+        usage: { inputTokens: 11, outputTokens: 7, cacheReadInputTokens: 6, cacheWriteInputTokens: 4 },
       },
     ]);
     expect(transport).toHaveBeenCalledWith(expect.objectContaining({
       model: 'claude-test',
       maxTokens: 321,
-      messages: request().messages,
+      messages: request().prompt.messages,
       thinking: { type: 'disabled' },
     }));
+    expect(transport.mock.calls[0]?.[0].system).toHaveLength(2);
+    expect(transport.mock.calls[0]?.[0].system[0]).not.toHaveProperty('cache_control');
+  });
+
+  it('仅向 Anthropic 官方端点的稳定系统块添加缓存断点', async () => {
+    const transport = vi.fn(async () => nativeStream([
+      start,
+      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '好' } },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } },
+      { type: 'message_stop' },
+    ]));
+    const client = new AnthropicMessagesClient({ ...profile, baseUrl: 'https://api.anthropic.com' }, { transport });
+    await collect(client.stream(request()));
+    expect(transport.mock.calls[0]?.[0].system[0]).toMatchObject({ cache_control: { type: 'ephemeral' } });
+    expect(transport.mock.calls[0]?.[0].system[1]).not.toHaveProperty('cache_control');
   });
 
   it('在同一消息中保留文本并组装碎片化的多个 tool_use', async () => {

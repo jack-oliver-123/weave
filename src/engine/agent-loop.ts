@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import type {
-  AgentEvent, AgentTaskMode, ChatMessage, LlmClient, LlmRequest, LlmStreamEvent, Plan, RunOutcome,
-  RunProgressSummary, TokenUsage, ToolCallRequest, ToolCallResult, ToolExecutor,
+  AgentEvent, AgentTaskMode, ChatMessage, EnvironmentContext, LlmClient, LlmRequest, LlmStreamEvent, Plan, PromptMode, RunOutcome,
+  PromptCompletionAudit, RunProgressSummary, TokenUsage, ToolCallRequest, ToolCallResult, ToolExecutor,
 } from '../shared/types.js';
 import { ControlToolCatalog, planFromSubmission, type AgentPhase, type SubmittedPlanInput } from './control-tools.js';
 import { blockedDependency, nextExecutableStep, reconcilePlan, updateStep, validateCriteria, validatePlanCompletion, validatePlanSubmission, PlanValidationError } from './plan.js';
-import { buildSystemPrompt, type PromptMode } from './prompt-builder.js';
+import { assemblePrompt, buildPromptCompletionAudit } from './prompt-assembly.js';
+import { buildRuntimeState } from './prompt-builder.js';
+import { createEnvironmentContext } from './prompt-environment.js';
+import { CONTROL_DECISION_CHECKPOINT } from './prompt-rules.js';
 
 const REACT_LIMIT = 10;
 const DRAFT_LIMIT = 10;
@@ -33,12 +36,14 @@ interface ModelResponse {
   readonly text: string;
   readonly calls: readonly ToolCallRequest[];
   readonly completion: Extract<LlmStreamEvent, { type: 'stream_complete' }>;
+  readonly audit: PromptCompletionAudit;
 }
 interface Stats {
   iterations: number;
   toolCalls: number;
   toolErrors: number;
   usage?: TokenUsage;
+  promptAudits: PromptCompletionAudit[];
   completedWork: string[];
   unfinishedWork: string[];
   sideEffects: string[];
@@ -48,7 +53,12 @@ interface Stats {
 export class AgentLoop {
   private readonly controls = new ControlToolCatalog();
 
-  constructor(private readonly client: LlmClient, private readonly tools: ToolExecutor, private readonly maxTokens: number) {}
+  constructor(
+    private readonly client: LlmClient,
+    private readonly tools: ToolExecutor,
+    private readonly maxTokens: number,
+    private readonly environment: EnvironmentContext = createEnvironmentContext(process.cwd()),
+  ) {}
 
   async *run(input: AgentRunInput): AsyncGenerator<AgentEvent> {
     const runId = input.runId ?? input.createRunId?.() ?? randomUUID();
@@ -56,6 +66,7 @@ export class AgentLoop {
     const planId = input.createPlanId ?? randomUUID;
     const stats: Stats = {
       iterations: 0, toolCalls: 0, toolErrors: 0,
+      promptAudits: [],
       completedWork: [...(input.progress?.completedWork ?? [])],
       unfinishedWork: [...(input.progress?.unfinishedWork ?? [input.task])],
       sideEffects: [...(input.progress?.sideEffects ?? [])],
@@ -67,6 +78,7 @@ export class AgentLoop {
     let plan = input.plan;
     let lastFingerprint: string | undefined;
     let repeats = 0;
+    let protocolCorrection: string | undefined;
     const stepIterations = new Map<string, number>();
     const mode: AgentTaskMode = input.kind === 'react' ? 'react' : 'plan';
     const outcome = (reason: RunOutcome['reason'], summary: string, taskCompleted = reason === 'completed' && input.kind !== 'plan_draft'): RunOutcome =>
@@ -112,12 +124,19 @@ export class AgentLoop {
         const phase = phaseFor(input.kind, plan);
         const scope = input.kind === 'plan_draft' ? 'read_only' : stats.toolCalls >= 100 || phase === 'plan_finalize' ? 'none' : 'all';
         const promptMode: PromptMode = input.kind === 'react' ? 'react' : input.kind === 'plan_draft' ? 'plan_draft' : phase === 'plan_finalize' ? 'plan_finalize' : 'plan_execute';
-        const systemPrompt = buildSystemPrompt({ mode: promptMode, iterationLimit: input.kind === 'plan_execute' ? STEP_LIMIT : REACT_LIMIT,
-          ...(plan === undefined ? {} : { plan }), ...(step === undefined ? {} : { step }) });
         const businessDefinitions = this.tools.definitions(scope);
-        const response = await this.collect({ messages: [...history], maxTokens: this.maxTokens, signal: input.signal,
-          tools: [...businessDefinitions, ...this.controls.definitions(phase)], systemPrompt });
+        const definitions = [...businessDefinitions, ...this.controls.definitions(phase)];
+        const prompt = assemblePrompt({
+          runtime: buildRuntimeState({ mode: promptMode, iterationLimit: input.kind === 'plan_execute' ? STEP_LIMIT : REACT_LIMIT,
+            ...(plan === undefined ? {} : { plan }), ...(step === undefined ? {} : { step }),
+            ...(protocolCorrection === undefined ? {} : { protocolCorrection }) }),
+          environment: this.environment,
+          tools: definitions,
+          messages: [...history],
+        });
+        const response = await this.collect({ prompt, maxTokens: this.maxTokens, signal: input.signal });
         stats.usage = addUsage(stats.usage, response.completion.usage);
+        stats.promptAudits.push(response.audit);
         const blocks = [...(response.text === '' ? [] : [{ type: 'text' as const, text: response.text }]),
           ...response.calls.map((call) => ({ type: 'tool_call' as const, call }))];
         if (blocks.length > 0) history.push({ role: 'assistant', content: blocks });
@@ -125,7 +144,7 @@ export class AgentLoop {
         if (response.calls.length === 0) {
           const code = 'CONTROL_TOOL_REQUIRED';
           stats.lastError = '模型未使用控制工具推进任务。';
-          history.push({ role: 'user', content: '协议纠正：普通文本不能结束任务，请调用当前阶段允许的控制工具。' });
+          protocolCorrection = '普通文本不能结束任务，请调用当前阶段允许的控制工具。';
           ({ lastFingerprint, repeats } = repeat(lastFingerprint, repeats, fingerprint(['control', code])));
           yield iterationDone(input.taskId, runId, iteration, step?.id);
           if (repeats >= 3) {
@@ -135,6 +154,7 @@ export class AgentLoop {
           }
           continue;
         }
+        protocolCorrection = undefined;
 
         const controls = response.calls.filter((call) => this.controls.isControlTool(call.name));
         const business = response.calls.filter((call) => !this.controls.isControlTool(call.name));
@@ -200,6 +220,7 @@ export class AgentLoop {
             yield { type: skipped ? 'tool_call_skipped' : 'tool_call_completed', taskId: input.taskId, runId, iteration, callId: item.callId, toolName: item.toolName, result: item, ...(step === undefined ? {} : { stepId: step.id }) };
           }
           history.push(toolMessage(batch.results));
+          protocolCorrection = CONTROL_DECISION_CHECKPOINT;
           ({ lastFingerprint, repeats } = repeat(lastFingerprint, repeats, fingerprint(['business', business.map(stableCall), batch.results.map(stableResult)])));
           yield iterationDone(input.taskId, runId, iteration, step?.id);
           if (repeats >= 3) {
@@ -304,7 +325,7 @@ export class AgentLoop {
       else if (event.type === 'stream_complete') completion = event;
     }
     if (completion === undefined) throw new Error('模型响应未正常结束。');
-    return { text, calls, completion };
+    return { text, calls, completion, audit: buildPromptCompletionAudit(request.prompt.audit, this.client.profile, completion.usage) };
   }
 }
 
@@ -330,7 +351,8 @@ function result(reason: RunOutcome['reason'], stats: Stats, summary: string, pla
     ...(stats.lastError === undefined ? {} : { lastError: stats.lastError }),
   };
   const detailedSummary = reason === 'iteration_limit' || reason === 'abnormal' ? formatProgress(summary, progress) : summary;
-  return { reason, summary: detailedSummary, progress, ...(plan === undefined ? {} : { plan }), ...(stats.usage === undefined ? {} : { usage: stats.usage }), iterationCount: stats.iterations, toolCallCount: stats.toolCalls, toolErrorCount: stats.toolErrors };
+  return { reason, summary: detailedSummary, progress, ...(plan === undefined ? {} : { plan }), ...(stats.usage === undefined ? {} : { usage: stats.usage }),
+    promptAudits: Object.freeze([...stats.promptAudits]), iterationCount: stats.iterations, toolCallCount: stats.toolCalls, toolErrorCount: stats.toolErrors };
 }
 function stop(taskId: string, runId: string, outcome: RunOutcome): AgentEvent { return { type: 'run_stopped', taskId, runId, outcome }; }
 function iterationDone(taskId: string, runId: string, iteration: number, stepId?: string): AgentEvent { return { type: 'iteration_completed', taskId, runId, iteration, ...(stepId === undefined ? {} : { stepId }) }; }
@@ -347,7 +369,15 @@ function unique(values: readonly string[]): readonly string[] { return [...new S
 function formatProgress(summary: string, progress: RunOutcome['progress']): string {
   return `${summary} 已完成：${progress.completedWork.join('、') || '无'}；未完成：${progress.unfinishedWork.join('、') || '无'}；副作用：${progress.sideEffects.join('、') || '无'}；最后异常：${progress.lastError ?? '无'}。`;
 }
-function addUsage(current: TokenUsage | undefined, next: TokenUsage | undefined): TokenUsage | undefined { if (current === undefined && next === undefined) return undefined; return { ...(current?.inputTokens === undefined && next?.inputTokens === undefined ? {} : { inputTokens: (current?.inputTokens ?? 0) + (next?.inputTokens ?? 0) }), ...(current?.outputTokens === undefined && next?.outputTokens === undefined ? {} : { outputTokens: (current?.outputTokens ?? 0) + (next?.outputTokens ?? 0) }) }; }
+function addUsage(current: TokenUsage | undefined, next: TokenUsage | undefined): TokenUsage | undefined {
+  if (current === undefined && next === undefined) return undefined;
+  return {
+    ...(current?.inputTokens === undefined && next?.inputTokens === undefined ? {} : { inputTokens: (current?.inputTokens ?? 0) + (next?.inputTokens ?? 0) }),
+    ...(current?.outputTokens === undefined && next?.outputTokens === undefined ? {} : { outputTokens: (current?.outputTokens ?? 0) + (next?.outputTokens ?? 0) }),
+    ...(current?.cacheReadInputTokens === undefined && next?.cacheReadInputTokens === undefined ? {} : { cacheReadInputTokens: (current?.cacheReadInputTokens ?? 0) + (next?.cacheReadInputTokens ?? 0) }),
+    ...(current?.cacheWriteInputTokens === undefined && next?.cacheWriteInputTokens === undefined ? {} : { cacheWriteInputTokens: (current?.cacheWriteInputTokens ?? 0) + (next?.cacheWriteInputTokens ?? 0) }),
+  };
+}
 function safeMessage(error: unknown): string { return error instanceof Error ? error.message : 'AgentLoop 运行时发生内部错误。'; }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 

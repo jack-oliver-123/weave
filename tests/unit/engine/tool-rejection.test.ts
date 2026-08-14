@@ -26,7 +26,8 @@ describe('provider tool rejection', () => {
       thinking: false, maxTokens: 100,
     };
     const client: LlmClient = createClient(profile, transport);
-    const result = await collect(client.stream({ ...request(), tools: [tool], systemPrompt: '工具原则' }));
+    const base = request();
+    const result = await collect(client.stream({ ...base, prompt: { ...base.prompt, tools: [tool] } }));
     expect(result).toEqual([{ type: 'stream_error', error: {
       code: 'PROVIDER_ERROR', message: '模型服务拒绝了请求。', retryable: false,
     } }]);
@@ -43,10 +44,11 @@ describe('provider tool rejection', () => {
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
     const client = new OpenAIChatCompletionsClient(profile, { transport });
-    const result = await collect(client.stream({ ...request(), messages: [{ role: 'tool', content: [{ type: 'tool_result', result: {
+    const base = request();
+    const result = await collect(client.stream({ ...base, prompt: { ...base.prompt, messages: [{ role: 'tool', content: [{ type: 'tool_result', result: {
       callId: 'c1', providerCallId: 'p1', toolName: 'read_file', isError: false,
       content: { summary: 'x', data: cyclic },
-    } }] }] }));
+    } }] }] } }));
     expect(result).toEqual([{ type: 'stream_error', error: {
       code: 'INTERNAL_ERROR', message: '模型协议边界处理失败。', retryable: false,
     } }]);

@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { randomUUID } from 'node:crypto';
 import type { ResolvedProfile } from '../../config/index.js';
+import type { ChatSystemMode } from '../../config/index.js';
 import type { FinishReason, LlmClient, LlmRequest, LlmStreamEvent, TokenUsage } from '../../shared/types.js';
 import { isRecord, mapClientError, ProtocolError, readNumber, readRecord, readString } from './errors.js';
 import { deepSeekThinkingExtension, type DisabledThinking } from './request-extensions.js';
@@ -29,6 +30,7 @@ export class OpenAIChatCompletionsClient implements LlmClient {
   private readonly transport: OpenAIChatTransport;
   private readonly thinkingExtension: { readonly thinking?: DisabledThinking };
   private readonly createCallId: () => string;
+  private readonly systemMode: ChatSystemMode;
 
   constructor(profile: ResolvedProfile, options: OpenAIChatClientOptions = {}) {
     this.profile = { name: profile.name, protocol: profile.protocol, model: profile.model };
@@ -36,6 +38,7 @@ export class OpenAIChatCompletionsClient implements LlmClient {
     this.transport = options.transport ?? createSdkTransport(profile);
     this.thinkingExtension = deepSeekThinkingExtension(profile.baseUrl);
     this.createCallId = options.createCallId ?? randomUUID;
+    this.systemMode = profile.chatSystemMode ?? 'multiple';
   }
 
   async *stream(request: LlmRequest): AsyncGenerator<LlmStreamEvent> {
@@ -47,7 +50,7 @@ export class OpenAIChatCompletionsClient implements LlmClient {
     let stoppedForTools = false;
     const calls = new Map<number, { providerCallId?: string; name?: string; arguments: string }>();
     try {
-      const encoded = encodeChatRequest(request.messages, request.tools, request.systemPrompt);
+      const encoded = encodeChatRequest(request.prompt, this.systemMode);
       const source = await guard.wait(this.transport({
         model: this.profile.model,
         messages: encoded.messages,
@@ -64,9 +67,14 @@ export class OpenAIChatCompletionsClient implements LlmClient {
         }
         const rawUsage = readRecord(chunk, 'usage');
         if (rawUsage !== undefined) {
+          const details = readRecord(rawUsage, 'prompt_tokens_details');
+          const cacheReadInputTokens = readNumber(details, 'cached_tokens');
+          const cacheWriteInputTokens = readNumber(details, 'cache_write_tokens') ?? readNumber(rawUsage, 'cache_write_tokens');
           usage = {
             ...(readNumber(rawUsage, 'prompt_tokens') === undefined ? {} : { inputTokens: readNumber(rawUsage, 'prompt_tokens') }),
             ...(readNumber(rawUsage, 'completion_tokens') === undefined ? {} : { outputTokens: readNumber(rawUsage, 'completion_tokens') }),
+            ...(cacheReadInputTokens === undefined ? {} : { cacheReadInputTokens }),
+            ...(cacheWriteInputTokens === undefined ? {} : { cacheWriteInputTokens }),
           };
         }
         if (chunk.choices.length === 0) continue;

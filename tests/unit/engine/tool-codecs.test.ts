@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage, ToolCallResult, ToolDefinition } from '../../../src/shared/types.js';
+import { assemblePrompt } from '../../../src/engine/prompt-assembly.js';
+import { buildRuntimeState } from '../../../src/engine/prompt-builder.js';
 import {
   encodeAnthropicRequest,
   encodeChatRequest,
@@ -33,23 +35,38 @@ const history: readonly ChatMessage[] = [
 
 describe('tool protocol codecs', () => {
   it('从同一中立定义生成三种等价工具定义与 auto 选择', () => {
-    const anthropic = encodeAnthropicRequest([], [definition], '原则');
-    const chat = encodeChatRequest([], [definition], '原则');
-    const responses = encodeResponsesRequest([], [definition], '原则');
+    const prompt = assembled([], [definition]);
+    const anthropic = encodeAnthropicRequest(prompt, true);
+    const chat = encodeChatRequest(prompt);
+    const responses = encodeResponsesRequest(prompt);
     expect(anthropic).toMatchSnapshot();
     expect(chat).toMatchSnapshot();
     expect(responses).toMatchSnapshot();
   });
 
-  it('工具禁用时不增加工具、选择或系统指令字段', () => {
+  it('工具禁用时仍保留系统指令，但不增加工具或选择字段', () => {
     const messages = [{ role: 'user', content: '你好' }] as const;
-    expect(encodeAnthropicRequest(messages)).toEqual({ messages });
-    expect(encodeChatRequest(messages)).toEqual({ messages });
-    expect(encodeResponsesRequest(messages)).toEqual({ messages });
+    const prompt = assembled(messages);
+    expect(encodeAnthropicRequest(prompt)).not.toHaveProperty('tools');
+    expect(encodeAnthropicRequest(prompt).system).toHaveLength(2);
+    expect(encodeChatRequest(prompt)).not.toHaveProperty('tools');
+    expect(encodeChatRequest(prompt).messages.slice(0, 2).map((message) => (message as { role: string }).role)).toEqual(['system', 'system']);
+    expect(encodeResponsesRequest(prompt)).not.toHaveProperty('tools');
+    expect(encodeResponsesRequest(prompt).instructions).toContain('<system-reminder>');
+  });
+
+  it('Chat 单 system 兼容模式合并稳定指令和动态提醒', () => {
+    const prompt = assembled([{ role: 'user', content: '你好' }]);
+    const encoded = encodeChatRequest(prompt, 'single');
+    expect(encoded.messages).toHaveLength(2);
+    expect(encoded.messages[0]).toMatchObject({ role: 'system' });
+    expect((encoded.messages[0] as { content: string }).content).toContain('<identity>');
+    expect((encoded.messages[0] as { content: string }).content).toContain('<system-reminder>');
+    expect(encoded.messages[1]).toEqual({ role: 'user', content: '你好' });
   });
 
   it('映射三种原生历史并保留 Provider call ID 与错误标记', () => {
-    expect(encodeAnthropicRequest(history).messages).toEqual([
+    expect(encodeAnthropicRequest(assembled(history)).messages).toEqual([
       { role: 'assistant', content: [
         { type: 'text', text: '我来读取。' },
         { type: 'tool_use', id: 'provider-1', name: 'read_file', input: { path: 'a.txt' } },
@@ -58,11 +75,11 @@ describe('tool protocol codecs', () => {
         type: 'tool_result', tool_use_id: 'provider-1', content: serializeToolResult(result), is_error: true,
       }] },
     ]);
-    expect(encodeChatRequest(history).messages).toMatchObject([
+    expect(encodeChatRequest(assembled(history)).messages.slice(2)).toMatchObject([
       { role: 'assistant', tool_calls: [{ id: 'provider-1' }] },
       { role: 'tool', tool_call_id: 'provider-1' },
     ]);
-    expect(encodeResponsesRequest(history).messages).toMatchObject([
+    expect(encodeResponsesRequest(assembled(history)).messages).toMatchObject([
       { role: 'assistant', content: '我来读取。' },
       { type: 'function_call', call_id: 'provider-1' },
       { type: 'function_call_output', call_id: 'provider-1' },
@@ -80,3 +97,7 @@ describe('tool protocol codecs', () => {
     expect(() => serializeToolResult({ ...valid, content: { summary: 'x', data: cyclic } })).toThrow();
   });
 });
+
+function assembled(messages: readonly ChatMessage[], tools: readonly ToolDefinition[] = []) {
+  return assemblePrompt({ runtime: buildRuntimeState({ mode: 'react', iterationLimit: 10 }), tools, messages });
+}

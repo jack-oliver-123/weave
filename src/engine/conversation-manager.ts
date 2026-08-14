@@ -4,6 +4,7 @@ import type {
   ChatMessage,
   ConversationController,
   ConversationStore,
+  EnvironmentContext,
   LlmClient,
   Plan,
   SafeError,
@@ -43,6 +44,7 @@ export interface ConversationManagerOptions {
   readonly createQuestionId?: () => string;
   readonly createPlanId?: () => string;
   readonly now?: () => number;
+  readonly environment?: EnvironmentContext;
 }
 
 interface ActiveRun {
@@ -76,7 +78,7 @@ export class ConversationManager implements ConversationController {
   constructor(private readonly client: LlmClient, private readonly store: ConversationStore, private readonly options: ConversationManagerOptions) {
     if (!Number.isInteger(options.maxTokens) || options.maxTokens <= 0) throw new TypeError('maxTokens must be a positive integer');
     const executor = options.toolExecutor ?? (options.tools === undefined ? EMPTY_EXECUTOR : new SchedulerToolExecutor(options.tools.definitions, options.tools.scheduler));
-    this.loop = new AgentLoop(client, executor, options.maxTokens);
+    this.loop = new AgentLoop(client, executor, options.maxTokens, options.environment);
     this.createTurnId = options.createTurnId ?? randomUUID;
     this.createTaskId = options.createTaskId ?? randomUUID;
     this.createRunId = options.createRunId ?? randomUUID;
@@ -199,7 +201,7 @@ export class ConversationManager implements ConversationController {
       }
       if (outcome.reason === 'cancelled') {
         yield { type: 'task_state', turnId: active.turnId, taskId: active.task.taskId, state: 'cancelled', summary: outcome.summary };
-        yield { type: 'turn_cancelled', turnId: active.turnId, durationMs };
+        yield { type: 'turn_cancelled', turnId: active.turnId, promptAudits: outcome.promptAudits, durationMs };
         return;
       }
       if (outcome.reason === 'awaiting_input') {
@@ -213,7 +215,8 @@ export class ConversationManager implements ConversationController {
         return;
       }
       yield { type: 'task_state', turnId: active.turnId, taskId: active.task.taskId, state: 'stopped', summary: outcome.summary, runCount: active.task.runCount, totalIterations: active.task.totalIterations };
-      yield { type: 'turn_error', turnId: active.turnId, error: outcome.error ?? stopError(outcome.reason, outcome.summary), restoreInput: active.userText, durationMs };
+      yield { type: 'turn_error', turnId: active.turnId, error: outcome.error ?? stopError(outcome.reason, outcome.summary), restoreInput: active.userText,
+        promptAudits: outcome.promptAudits, durationMs };
     } catch (error) {
       const durationMs = this.duration(active);
       if (active.cancelled) yield { type: 'turn_cancelled', turnId: active.turnId, durationMs };
@@ -327,6 +330,7 @@ function stopError(reason: 'iteration_limit' | 'abnormal', message: string): Saf
 function completeEvent(turnId: string, durationMs: number, outcome: import('../shared/types.js').RunOutcome): Extract<TurnEvent, { type: 'turn_complete' }> {
   return { type: 'turn_complete', turnId, status: 'completed', finishReason: 'stop', durationMs,
     ...(outcome.usage === undefined ? {} : { usage: outcome.usage }), modelTurnCount: outcome.iterationCount,
+    promptAudits: outcome.promptAudits,
     toolCallCount: outcome.toolCallCount, toolErrorCount: outcome.toolErrorCount };
 }
 function safeError(error: unknown): SafeError { return { code: error instanceof ConversationTaskError ? error.code : 'INTERNAL_ERROR', message: error instanceof Error ? error.message : '处理当前请求时发生内部错误。', retryable: false }; }

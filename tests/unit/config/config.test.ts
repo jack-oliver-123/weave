@@ -139,6 +139,21 @@ describe('loadConfig', () => {
     expect((await loadConfig({ configPath: profilePath, toolsEnabled: false })).toolsEnabled).toBe(false);
   });
 
+  it('accepts explicit Chat system-message compatibility mode', async () => {
+    const path = await writeConfig(validConfig()
+      .replace('anthropic-messages', 'openai-chat-completions')
+      .replace('thinking: false', 'thinking: false\n    chat_system_mode: single'));
+    expect((await loadConfig({ configPath: path })).selected.chatSystemMode).toBe('single');
+  });
+
+  it.each([
+    ['invalid value', validConfig().replace('thinking: false', 'thinking: false\n    chat_system_mode: auto')],
+    ['non-chat protocol', validConfig().replace('thinking: false', 'thinking: false\n    chat_system_mode: single')],
+  ])('rejects invalid Chat system-message mode: %s', async (_name, content) => {
+    const source = _name === 'invalid value' ? content.replace('anthropic-messages', 'openai-chat-completions') : content;
+    await expect(loadConfig({ configPath: await writeConfig(source) })).rejects.toMatchObject({ field: 'profiles[0].chat_system_mode' });
+  });
+
   it.each([
     ['root unknown', `tools:\n  enabled: true\n  timeout: 1\n${validConfig()}`, 'tools.timeout'],
     ['profile non-boolean', validConfig('    tools:\n      enabled: yes\n'), 'profiles[0].tools.enabled'],

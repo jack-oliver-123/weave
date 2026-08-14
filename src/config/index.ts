@@ -18,6 +18,7 @@ const PROFILE_KEYS = new Set([
   'thinking',
   'max_tokens',
   'tools',
+  'chat_system_mode',
 ]);
 const ROOT_KEYS = new Set(['default_profile', 'profiles', 'tools']);
 const TOOL_KEYS = new Set(['enabled']);
@@ -30,7 +31,10 @@ export interface ResolvedProfile extends ProfileSummary {
   readonly thinking: false;
   readonly maxTokens: number;
   readonly toolsEnabled?: boolean;
+  readonly chatSystemMode?: ChatSystemMode;
 }
+
+export type ChatSystemMode = 'multiple' | 'single';
 
 export interface LoadedConfig {
   readonly path: string;
@@ -156,6 +160,8 @@ function parseProfile(
     throw new ConfigError('max_tokens 必须是正整数', `${prefix}.max_tokens`, path);
   }
 
+  const chatSystemMode = parseChatSystemMode(profile.chat_system_mode, protocolValue as LlmProtocol, `${prefix}.chat_system_mode`, path);
+
   return {
     name,
     protocol: protocolValue as LlmProtocol,
@@ -164,10 +170,22 @@ function parseProfile(
     apiKey,
     thinking: false,
     maxTokens: maxTokens as number,
+    ...(chatSystemMode === undefined ? {} : { chatSystemMode }),
     ...(parseTools(profile.tools, `${prefix}.tools`, path) === undefined
       ? {}
       : { toolsEnabled: parseTools(profile.tools, `${prefix}.tools`, path) }),
   };
+}
+
+function parseChatSystemMode(value: unknown, protocol: LlmProtocol, field: string, path: string): ChatSystemMode | undefined {
+  if (value === undefined) return undefined;
+  if (protocol !== 'openai-chat-completions') {
+    throw new ConfigError('chat_system_mode 仅适用于 openai-chat-completions 协议', field, path);
+  }
+  if (value !== 'multiple' && value !== 'single') {
+    throw new ConfigError('chat_system_mode 必须是 multiple 或 single', field, path);
+  }
+  return value;
 }
 
 function parseTools(value: unknown, field: string, path: string): boolean | undefined {

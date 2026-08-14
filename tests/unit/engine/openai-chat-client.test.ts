@@ -20,7 +20,7 @@ describe('OpenAIChatCompletionsClient', () => {
       { choices: [{ index: 0, delta: { content: '你' }, finish_reason: null }] },
       { choices: [{ index: 0, delta: {}, finish_reason: null }] },
       { choices: [{ index: 0, delta: { content: '好' }, finish_reason: 'length' }] },
-      { choices: [], usage: { prompt_tokens: 9, completion_tokens: 4 } },
+      { choices: [], usage: { prompt_tokens: 9, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 2 } } },
     ]));
     const client = new OpenAIChatCompletionsClient(profile, { transport });
 
@@ -31,11 +31,12 @@ describe('OpenAIChatCompletionsClient', () => {
       {
         type: 'stream_complete',
         finishReason: 'max_tokens',
-        usage: { inputTokens: 9, outputTokens: 4 },
+        usage: { inputTokens: 9, outputTokens: 4, cacheReadInputTokens: 0, cacheWriteInputTokens: 2 },
       },
     ]);
     const sent = transport.mock.calls[0]?.[0];
     expect(sent).toMatchObject({ maxTokens: 321 });
+    expect(sent.messages.slice(0, 2).map((message: { role: string }) => message.role)).toEqual(['system', 'system']);
     expect(sent).not.toHaveProperty('thinking');
   });
 
@@ -53,6 +54,19 @@ describe('OpenAIChatCompletionsClient', () => {
     expect(transport).toHaveBeenCalledWith(expect.objectContaining({
       thinking: { type: 'disabled' },
     }));
+  });
+
+  it('按 profile 配置回退为单个 system 消息', async () => {
+    const transport = vi.fn(async () => nativeStream([
+      { choices: [{ index: 0, delta: { content: '好' }, finish_reason: 'stop' }] },
+    ]));
+    const client = new OpenAIChatCompletionsClient({ ...profile, chatSystemMode: 'single' }, { transport });
+
+    await collect(client.stream(request()));
+
+    const sent = transport.mock.calls[0]?.[0];
+    expect(sent.messages.filter((message: { role: string }) => message.role === 'system')).toHaveLength(1);
+    expect(sent.messages[0].content).toContain('<system-reminder>');
   });
 
   it('保留有文本拒答并映射为 refusal', async () => {

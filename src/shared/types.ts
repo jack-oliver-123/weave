@@ -67,6 +67,121 @@ export interface UserTurn {
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
+export type StaticPromptModuleId =
+  | 'identity'
+  | 'system_constraints'
+  | 'task_modes'
+  | 'action_execution'
+  | 'tool_usage'
+  | 'tone_style'
+  | 'text_output';
+
+export interface StaticPromptModule {
+  readonly id: StaticPromptModuleId;
+  readonly version: string;
+  readonly priority: number;
+  readonly content: string;
+}
+
+export interface StableSystemPrompt {
+  readonly promptVersion: string;
+  readonly modules: readonly StaticPromptModule[];
+  readonly text: string;
+  readonly hash: string;
+}
+
+export type PromptMode = 'react' | 'plan_draft' | 'plan_execute' | 'plan_finalize';
+
+export interface RuntimeStateContext {
+  readonly type: 'agent_state';
+  readonly mode: PromptMode;
+  readonly iterationLimit: number;
+  readonly plan?: Plan;
+  readonly step?: PlanStep;
+  readonly protocolCorrection?: string;
+}
+
+export interface CapabilityChangeContext {
+  readonly type: 'capability_change';
+  readonly serverId: string;
+  readonly status: 'available' | 'unavailable';
+  readonly affectedTools: readonly string[];
+  readonly impact: string;
+}
+
+export type RuntimeReminderContent = RuntimeStateContext | CapabilityChangeContext;
+
+export interface EnvironmentContext {
+  readonly cwd: string;
+  readonly workspaceRoots: readonly string[];
+  readonly os: string;
+  readonly shell: string;
+  readonly currentDate: string;
+  readonly timezone: string;
+}
+
+export type PromptTrust = 'trusted_runtime' | 'trusted_configuration' | 'untrusted_context';
+export type SystemReminderKind =
+  | 'runtime_state'
+  | 'environment'
+  | 'activated_skill'
+  | 'project_instructions'
+  | 'memory';
+
+export type SystemReminderFragment =
+  | {
+      readonly kind: 'runtime_state';
+      readonly source: 'weave-runtime';
+      readonly trust: 'trusted_runtime';
+      readonly content: RuntimeReminderContent;
+    }
+  | {
+      readonly kind: 'environment';
+      readonly source: 'weave-environment';
+      readonly trust: 'trusted_runtime';
+      readonly content: EnvironmentContext;
+    }
+  | {
+      readonly kind: 'activated_skill' | 'project_instructions' | 'memory';
+      readonly source: string;
+      readonly trust: 'trusted_configuration' | 'untrusted_context';
+      readonly content: string;
+    };
+
+export interface SystemReminder {
+  readonly fragments: readonly SystemReminderFragment[];
+  readonly text: string;
+}
+
+export interface PromptAudit {
+  readonly promptVersion: string;
+  readonly stableHash: string;
+  readonly assemblyHash: string;
+  readonly modules: readonly { readonly id: StaticPromptModuleId; readonly version: string; readonly characters: number }[];
+  readonly fragments: readonly {
+    readonly kind: SystemReminderKind;
+    readonly source: string;
+    readonly trust: PromptTrust;
+    readonly characters: number;
+  }[];
+}
+
+export interface PromptCompletionAudit extends PromptAudit {
+  readonly protocol: LlmProtocol;
+  readonly model: string;
+  readonly usage?: TokenUsage;
+}
+
+export interface PromptAssembly {
+  readonly system: {
+    readonly stable: StableSystemPrompt;
+    readonly reminder?: SystemReminder;
+  };
+  readonly tools: readonly ToolDefinition[];
+  readonly messages: readonly ChatMessage[];
+  readonly audit: PromptAudit;
+}
+
 export type AgentTaskMode = 'react' | 'plan';
 
 export type PlanStepStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'skipped' | 'invalidated';
@@ -101,6 +216,8 @@ export type TaskAction =
 export interface TokenUsage {
   readonly inputTokens?: number;
   readonly outputTokens?: number;
+  readonly cacheReadInputTokens?: number;
+  readonly cacheWriteInputTokens?: number;
 }
 
 export type FinishReason =
@@ -117,11 +234,9 @@ export interface SafeError {
 }
 
 export interface LlmRequest {
-  readonly messages: readonly ChatMessage[];
+  readonly prompt: PromptAssembly;
   readonly maxTokens: number;
   readonly signal: AbortSignal;
-  readonly tools?: readonly ToolDefinition[];
-  readonly systemPrompt?: string;
 }
 
 export type LlmStreamEvent =
@@ -173,6 +288,7 @@ export type TurnEvent =
       readonly status: TurnCompletionStatus;
       readonly finishReason: FinishReason;
       readonly usage?: TokenUsage;
+      readonly promptAudits?: readonly PromptCompletionAudit[];
       readonly durationMs: number;
       readonly modelTurnCount?: number;
       readonly toolCallCount?: number;
@@ -181,6 +297,7 @@ export type TurnEvent =
   | {
       readonly type: 'turn_cancelled';
       readonly turnId: string;
+      readonly promptAudits?: readonly PromptCompletionAudit[];
       readonly durationMs: number;
     }
   | {
@@ -188,6 +305,7 @@ export type TurnEvent =
       readonly turnId: string;
       readonly error: SafeError;
       readonly restoreInput: string;
+      readonly promptAudits?: readonly PromptCompletionAudit[];
       readonly durationMs: number;
     }
   | {
@@ -277,6 +395,7 @@ export interface RunOutcome {
   readonly question?: { readonly questionId: string; readonly prompt: string };
   readonly revision?: { readonly reason: string; readonly suggestion: string };
   readonly usage?: TokenUsage;
+  readonly promptAudits: readonly PromptCompletionAudit[];
   readonly iterationCount: number;
   readonly toolCallCount: number;
   readonly toolErrorCount: number;
@@ -350,7 +469,7 @@ export interface ConversationController {
 
 export interface ContextSnapshot {
   readonly messages: readonly ChatMessage[];
-  readonly systemPrompt: string;
+  readonly system: StableSystemPrompt;
 }
 
 export interface MemoryWriteRequest {

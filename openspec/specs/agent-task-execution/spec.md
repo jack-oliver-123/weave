@@ -153,17 +153,33 @@ AgentEvent SHALL 只包含结构化领域数据、状态、工具摘要与结果
 - **THEN** 系统为协议连续性保留该文本但不产生用户可见文本事件或普通历史消息
 
 ### Requirement: 使用最小且可组合的模式提示词
-系统 SHALL 通过独立可测试的纯提示词构建契约，使用一个基础片段和 ReAct、Plan 规划、Plan 执行三个短模式片段生成每次请求的 System Prompt。基础片段 SHALL 只规定使用可用工具完成任务、不输出内部推理、缺少信息时调用 `request_user_input`、完成并验证后调用 `complete_task`；模式片段 SHALL 只补充对应循环、计划提交或步骤验证规则。
+系统 SHALL 通过独立可测试的 Prompt 组装契约，把生产级静态 System Prompt 与当前运行的 SystemReminder 分离。静态任务模式模块 SHALL 定义 ReAct 与 Plan 的通用语义、切换规则、控制工具协议和完成条件，并 SHALL 在每次请求保持相同内容；当前模式、阶段、迭代上限、可选当前 Plan、当前步骤、成功标准、已有证据和协议纠错 SHALL 作为紧凑但完整的 `runtime_state` 动态片段随每次请求提供。
 
-本次提示词 MUST NOT 承担权限判断、完整安全策略、详细编码规范或终端输出布局。提示词 SHALL 作为独立请求字段传给统一模型客户端，不得伪装成用户或 assistant 历史消息。
+普通任务 SHALL 默认使用 ReAct，只有用户显式选择 `/plan` 才 SHALL 进入 Plan；模型可以建议 Plan，但 MUST NOT 自行切换模式。系统 MUST NOT 使用“首轮完整、间隔轮次重复、其余精简”的注入策略，也 MUST NOT 把运行状态伪装成用户或 assistant 历史消息。
 
-#### Scenario: 构建 ReAct 提示词
+提示词 SHALL 指导模型先调查可自行查明的事实；低风险、可逆且不改变任务目标的合理假设可以继续执行并在结果中披露，只有缺失信息会显著改变目标、范围、外部副作用或不可逆风险时才调用 `request_user_input`。诊断、解释、评审和规划请求 SHALL 默认只读；用户明确要求修改、构建或修复时，模型可以在当前可用工具范围内实施并验证。提交、推送、创建 PR、部署、删除数据及其他外部或高影响操作 SHALL 要求用户明确授权，但该要求仅是模型软约束，MUST NOT 被描述为已实现的运行时权限系统。
+
+模型只有在完成与风险相称的真实验证后才 SHALL 调用 `complete_task`，并 SHALL 在验证摘要中区分已通过、失败、未运行和受外部条件阻塞。代码已写入、类型检查通过或局部测试通过 MUST NOT 被自动等同为整个任务完成，且模型 MUST NOT 虚构工具结果或验证证据。
+
+#### Scenario: 构建 ReAct 运行上下文
 - **WHEN** AgentLoop 启动默认 ReAct 任务
-- **THEN** 模型收到基础片段与 ReAct 短片段，且提示词不包含 Plan 提交规则或终端展示文案
+- **THEN** 模型收到完整稳定提示词与声明 ReAct、当前阶段和迭代预算的动态片段，且不包含当前未激活的 Plan 步骤状态
 
-#### Scenario: 构建 Plan 步骤提示词
+#### Scenario: 构建 Plan 步骤上下文
 - **WHEN** AgentLoop 执行已批准计划中的当前步骤
-- **THEN** 模型收到基础片段、Plan 执行片段、当前步骤、成功标准和已有证据
+- **THEN** 模型收到相同稳定提示词，以及包含当前计划、步骤、成功标准和已有证据的动态运行状态
+
+#### Scenario: 可自行查明信息
+- **WHEN** 继续任务所需事实能够通过当前只读工具获得
+- **THEN** 提示词要求模型先调查而不是立即请求用户输入
+
+#### Scenario: 关键歧义改变副作用
+- **WHEN** 缺失信息会决定是否执行不可逆或外部副作用
+- **THEN** 提示词要求模型停止相关动作并调用 `request_user_input`
+
+#### Scenario: 完成前验证不足
+- **WHEN** 模型只完成代码修改但没有取得任务成功标准所需的验证证据
+- **THEN** 提示词禁止把整个任务声明为已验证完成，并要求继续验证或明确报告未验证状态
 
 ### Requirement: 在进程内管理唯一活动任务及恢复
 每个顶层普通输入 SHALL 创建一个新的 ReAct 任务，`/plan` SHALL 创建一个 Plan 任务；一个会话任一时刻最多 SHALL 存在一个未结束任务。任务状态 SHALL 使用 `running | awaiting_input | awaiting_approval | stopped | cancelled | completed | exited`，并 SHALL 只允许定义的状态迁移。Plan 子状态 SHALL 使用 `draft | awaiting_approval | executing | awaiting_input | awaiting_revision | cancelled | completed`，并 SHALL 校验两层状态组合。

@@ -23,7 +23,7 @@ describe('AgentLoop runtime', () => {
     ]);
     expect(events.some((event) => JSON.stringify(event).includes('内部思考'))).toBe(false);
     expect(events.at(-1)).toMatchObject({ type: 'run_stopped', outcome: { reason: 'completed', result: '完成', iterationCount: 2, toolCallCount: 1 } });
-    expect(client.requests[1]?.messages).toEqual(expect.arrayContaining([
+    expect(client.requests[1]?.prompt.messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: 'assistant', content: expect.arrayContaining([expect.objectContaining({ type: 'text', text: '内部思考' })]) }),
       expect.objectContaining({ role: 'tool' }),
     ]));
@@ -56,7 +56,9 @@ describe('AgentLoop runtime', () => {
     const client = scripted(Array.from({ length: 3 }, () => [start, { type: 'text_delta', delta: '只是文字' }, done]));
     const events = await run(client, executor([]));
     expect(client.requests).toHaveLength(3);
-    expect(client.requests[1]?.messages.at(-1)).toEqual({ role: 'user', content: '协议纠正：普通文本不能结束任务，请调用当前阶段允许的控制工具。' });
+    expect(client.requests[1]?.prompt.messages.at(-1)).toEqual({ role: 'assistant', content: [{ type: 'text', text: '只是文字' }] });
+    expect(client.requests[1]?.prompt.system.reminder?.text).toContain('protocolCorrection');
+    expect(client.requests[1]?.prompt.system.reminder?.text).toContain('普通文本不能结束任务');
     expect(events.at(-1)).toMatchObject({ type: 'run_stopped', outcome: { reason: 'abnormal', iterationCount: 3 } });
   });
 
@@ -119,14 +121,14 @@ describe('AgentLoop runtime', () => {
       }),
     };
     await run(client, limited);
-    expect(client.requests[1]?.tools?.map((item) => item.name)).toEqual(['complete_task', 'request_user_input']);
+    expect(client.requests[1]?.prompt.tools.map((item) => item.name)).toEqual(['complete_task', 'request_user_input']);
   });
 
   it('drafts a structured plan with read-only business definitions', async () => {
     const input = { goal: '交付', successCriteria: ['全部通过'], steps: [{ id: 's1', description: '实现', dependencies: [], successCriteria: ['单测通过'] }] };
     const client = scripted([[start, calls(toolCall('submit_plan', input)), done]]);
     const events = await run(client, executor(), { kind: 'plan_draft', createPlanId: () => 'plan-1' });
-    expect(client.requests[0]?.tools?.map((item) => item.name)).toEqual(['read_file', 'submit_plan', 'request_user_input']);
+    expect(client.requests[0]?.prompt.tools.map((item) => item.name)).toEqual(['read_file', 'submit_plan', 'request_user_input']);
     expect(events).toContainEqual(expect.objectContaining({ type: 'plan_submitted', plan: expect.objectContaining({ planId: 'plan-1', version: 1 }) }));
   });
 
@@ -146,7 +148,7 @@ describe('AgentLoop runtime', () => {
     ]);
     const events = await run(client, executor(), { kind: 'plan_execute', plan });
     expect(events.filter((event) => event.type === 'plan_step_started').map((event) => event.stepId)).toEqual(['s1', 's2']);
-    expect(client.requests[1]?.messages.at(-1)).toMatchObject({ role: 'tool', content: [{ result: { toolName: 'complete_step', isError: false } }] });
+    expect(client.requests[1]?.prompt.messages.at(-1)).toMatchObject({ role: 'tool', content: [{ result: { toolName: 'complete_step', isError: false } }] });
     expect(events.at(-1)).toMatchObject({ type: 'run_stopped', outcome: { reason: 'completed', plan: { steps: [{ status: 'completed' }, { status: 'completed' }] } } });
   });
 

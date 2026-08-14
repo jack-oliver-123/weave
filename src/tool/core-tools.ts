@@ -12,6 +12,7 @@ import { ToolRegistry } from './registry.js';
 import { decodeUtf8, encodeUtf8, sliceLines } from './text-file.js';
 import { walkFiles } from './walker.js';
 import type { Workspace } from './workspace.js';
+import { createToolGuidance, editToolGuidance } from '../engine/prompt-rules.js';
 
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_OUTPUT_BYTES = 64 * 1024;
@@ -261,17 +262,18 @@ async function runBash(command: string, cwd: string, timeoutMs: number, signal: 
 
 function definition(
   name: string, purpose: string, executionMode: 'read_shared' | 'write_exclusive',
-  inputSchema: JsonSchema, resultSchema: JsonSchema, worksWith: ToolDefinition['worksWith'],
+  inputSchema: JsonSchema, resultSchema: JsonSchema, worksWith: ToolDefinition['worksWith'], guidance?: string,
 ): ToolDefinition {
   return { name, purpose, executionMode, inputSchema, resultSchema, worksWith,
-    useWhen: [`需要使用 ${name} 完成其专用操作时`], avoidWhen: ['存在更精确的专用工具或无需访问工作区时'] };
+    useWhen: [`需要使用 ${name} 完成其专用操作时`, ...(guidance === undefined ? [] : [guidance])],
+    avoidWhen: ['存在更精确的专用工具或无需访问工作区时'] };
 }
 const string = (maxLength?: number) => ({ type: 'string', ...(maxLength === undefined ? {} : { maxLength }) });
 const object = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const resultBase = (properties: Record<string, unknown>, required: string[]) => object(properties, required);
 function readFileDefinition() { return definition('read_file', '读取工作区内 UTF-8 文本文件或指定行范围', 'read_shared', object({ path: string(), startLine: { type: 'integer', minimum: 1 }, lineCount: { type: 'integer', minimum: 1 } }, ['path']), resultBase({ path: string(), content: string(), startLine: { type: 'integer' }, endLine: { type: 'integer' }, totalLines: { type: 'integer' }, truncated: { type: 'boolean' }, nextStartLine: { type: 'integer' } }, ['path', 'content', 'startLine', 'endLine', 'totalLines', 'truncated']), [{ toolName: 'grep', usage: '先定位匹配再读取上下文' }, { toolName: 'edit_file', usage: '编辑前读取精确原文' }]); }
-function createFileDefinition() { return definition('create_file', '创建新的 UTF-8 文本文件且绝不覆盖已有文件', 'write_exclusive', object({ path: string(), content: string(1024 * 1024) }, ['path', 'content']), resultBase({ path: string(), bytesWritten: { type: 'integer' }, createdDirectories: { type: 'array', items: string() } }, ['path', 'bytesWritten', 'createdDirectories']), [{ toolName: 'glob', usage: '创建前确认目标路径' }]); }
-function editFileDefinition() { return definition('edit_file', '通过唯一精确匹配原子编辑 UTF-8 文本文件', 'write_exclusive', object({ path: string(), edits: { type: 'array', minItems: 1, maxItems: 100, items: object({ oldText: string(), newText: string() }, ['oldText', 'newText']) } }, ['path', 'edits']), resultBase({ path: string(), replacements: { type: 'integer' }, beforeBytes: { type: 'integer' }, afterBytes: { type: 'integer' } }, ['path', 'replacements', 'beforeBytes', 'afterBytes']), [{ toolName: 'read_file', usage: '获取唯一精确匹配文本' }]); }
+function createFileDefinition() { return definition('create_file', '创建新的 UTF-8 文本文件且绝不覆盖已有文件', 'write_exclusive', object({ path: string(), content: string(1024 * 1024) }, ['path', 'content']), resultBase({ path: string(), bytesWritten: { type: 'integer' }, createdDirectories: { type: 'array', items: string() } }, ['path', 'bytesWritten', 'createdDirectories']), [{ toolName: 'glob', usage: '创建前确认目标路径' }], createToolGuidance()); }
+function editFileDefinition() { return definition('edit_file', '通过唯一精确匹配原子编辑 UTF-8 文本文件', 'write_exclusive', object({ path: string(), edits: { type: 'array', minItems: 1, maxItems: 100, items: object({ oldText: string(), newText: string() }, ['oldText', 'newText']) } }, ['path', 'edits']), resultBase({ path: string(), replacements: { type: 'integer' }, beforeBytes: { type: 'integer' }, afterBytes: { type: 'integer' } }, ['path', 'replacements', 'beforeBytes', 'afterBytes']), [{ toolName: 'read_file', usage: '获取唯一精确匹配文本' }], editToolGuidance()); }
 function globDefinition() { return definition('glob', '按 glob 模式查找工作区普通文件', 'read_shared', object({ pattern: string(4096), path: string() }, ['pattern']), resultBase({ files: { type: 'array', items: string() }, truncated: { type: 'boolean' }, reason: string() }, ['files', 'truncated']), [{ toolName: 'read_file', usage: '读取匹配文件' }]); }
 function grepDefinition() { return definition('grep', '逐行执行字面量文本搜索', 'read_shared', object({ pattern: string(4096), path: string(), glob: string(), caseSensitive: { type: 'boolean' } }, ['pattern']), resultBase({ matches: { type: 'array', items: object({ path: string(), line: { type: 'integer' }, text: string() }, ['path', 'line', 'text']) }, warnings: { type: 'array', items: object({ path: string(), code: string() }, ['path', 'code']) }, truncated: { type: 'boolean' }, reason: string() }, ['matches', 'warnings', 'truncated']), [{ toolName: 'read_file', usage: '读取匹配位置上下文' }]); }
 function bashDefinition() { return definition('bash', '在工作区 cwd 中运行独立非交互 Bash 命令', 'write_exclusive', object({ command: string(), cwd: string(), timeoutMs: { type: 'integer', minimum: 1, maximum: 600000 } }, ['command']), resultBase({ stdout: string(), stderr: string(), exitCode: { type: 'integer' }, durationMs: { type: 'number' }, timedOut: { type: 'boolean' }, truncated: { type: 'boolean' } }, ['stdout', 'stderr', 'exitCode', 'durationMs', 'timedOut', 'truncated']), [{ toolName: 'read_file', usage: '检查命令产生的文件' }]); }

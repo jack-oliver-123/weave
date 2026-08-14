@@ -4,13 +4,14 @@ import { InMemoryConversationStore } from '../../../src/memory/conversation-stor
 import { ToolCallScheduler } from '../../../src/tool/scheduler.js';
 import type { LlmStreamEvent, ToolCallRequest, ToolCallResult, ToolDefinition, TurnEvent } from '../../../src/shared/types.js';
 import { FakeLlmClient, fakeProfile } from '../../fixtures/fake-llm-client.js';
+import { CONTROL_DECISION_CHECKPOINT } from '../../../src/engine/prompt-rules.js';
 
 const definition: ToolDefinition = {
   name: 'read_file', purpose: '读取文件', useWhen: ['需要内容'], avoidWhen: ['需要修改'],
   inputSchema: { type: 'object' }, resultSchema: { type: 'object' }, worksWith: [], executionMode: 'read_shared',
 };
 const start: LlmStreamEvent = { type: 'stream_start' };
-const done: LlmStreamEvent = { type: 'stream_complete', finishReason: 'stop', usage: { inputTokens: 2, outputTokens: 3 } };
+const done: LlmStreamEvent = { type: 'stream_complete', finishReason: 'stop', usage: { inputTokens: 2, outputTokens: 3, cacheReadInputTokens: 0, cacheWriteInputTokens: 1 } };
 const call = (index: number, name = 'read_file', input: unknown = { index }): ToolCallRequest => ({ callId: `c${index}`, providerCallId: `p${index}`, name, input });
 const calls = (...items: ToolCallRequest[]): LlmStreamEvent => ({ type: 'tool_calls', calls: items });
 const complete = (index: number, result: string) => call(index, 'complete_task', { result, verificationSummary: '验证通过' });
@@ -28,7 +29,18 @@ describe('ConversationManager AgentLoop 边界', () => {
       'agent_iteration', 'agent_iteration', 'text_delta', 'turn_complete',
     ]);
     expect(JSON.stringify(events)).not.toContain('内部行动说明');
-    expect(events.at(-1)).toMatchObject({ type: 'turn_complete', modelTurnCount: 2, toolCallCount: 1, toolErrorCount: 0, usage: { inputTokens: 4, outputTokens: 6 } });
+    expect(events.at(-1)).toMatchObject({ type: 'turn_complete', modelTurnCount: 2, toolCallCount: 1, toolErrorCount: 0, usage: {
+      inputTokens: 4, outputTokens: 6, cacheReadInputTokens: 0, cacheWriteInputTokens: 2,
+    } });
+    const completedEvent = events.at(-1) as Extract<TurnEvent, { type: 'turn_complete' }>;
+    expect(completedEvent.promptAudits).toHaveLength(2);
+    expect(completedEvent.promptAudits).toEqual(expect.arrayContaining([
+      expect.objectContaining({ protocol: 'anthropic-messages', model: fakeProfile.model, promptVersion: '1.0.2', usage: done.usage }),
+    ]));
+    expect(completedEvent.promptAudits?.every((audit) => /^[a-f0-9]{64}$/.test(audit.stableHash) && /^[a-f0-9]{64}$/.test(audit.assemblyHash))).toBe(true);
+    expect(JSON.stringify(completedEvent.promptAudits)).not.toContain('读取文件');
+    expect(JSON.stringify(completedEvent.promptAudits)).not.toContain('内部行动说明');
+    expect(client.requests[1]?.prompt.system.reminder?.text).toContain(CONTROL_DECISION_CHECKPOINT);
     expect(store.getMessages().map((message) => message.role)).toEqual(['user', 'assistant', 'tool', 'assistant']);
   });
 
@@ -36,7 +48,7 @@ describe('ConversationManager AgentLoop 边界', () => {
     const client = scripted([[start, calls(call(1)), done], [start, calls(complete(2, '已调整方案')), done]]);
     const events = await collect(manager(client, new InMemoryConversationStore(), true).submit({ mode: 'react', content: '找文件' }));
     expect(events.at(-1)).toMatchObject({ type: 'turn_complete', toolErrorCount: 1 });
-    expect(client.requests[1]?.messages.at(-1)).toMatchObject({ role: 'tool', content: [{ result: { isError: true, content: { error: { code: 'NOT_FOUND' } } } }] });
+    expect(client.requests[1]?.prompt.messages.at(-1)).toMatchObject({ role: 'tool', content: [{ result: { isError: true, content: { error: { code: 'NOT_FOUND' } } } }] });
   });
 
   it('模型流错误保留已完成业务轨迹', async () => {
@@ -51,7 +63,12 @@ describe('ConversationManager AgentLoop 边界', () => {
     const client = scripted(Array.from({ length: 10 }, (_, index) => [start, calls(call(index)), done]));
     const events = await collect(manager(client, new InMemoryConversationStore()).submit({ mode: 'react', content: '循环' }));
     expect(client.requests).toHaveLength(10);
-    expect(events.at(-1)).toMatchObject({ type: 'turn_error', error: { code: 'AGENT_LOOP_LIMIT_REACHED' } });
+    expect(events.at(-1)).toMatchObject({ type: 'turn_error', error: { code: 'AGENT_LOOP_LIMIT_REACHED' }, promptAudits: expect.arrayContaining([
+      expect.objectContaining({ protocol: 'anthropic-messages', model: fakeProfile.model, usage: done.usage }),
+    ]) });
+    const terminal = events.at(-1) as Extract<TurnEvent, { type: 'turn_error' }>;
+    expect(terminal.promptAudits).toHaveLength(10);
+    expect(JSON.stringify(terminal.promptAudits)).not.toContain('循环');
   });
 
   it('单响应 33 个调用不执行，并在三次等价违规后异常停止', async () => {

@@ -59,8 +59,8 @@ class AgentLoopSmokeClient implements LlmClient {
 
   async *stream(request: LlmRequest): AsyncIterable<LlmStreamEvent> {
     yield { type: 'stream_start' };
-    const names = new Set(request.tools?.map((tool) => tool.name) ?? []);
-    const userTexts = request.messages
+    const names = new Set(request.prompt.tools.map((tool) => tool.name));
+    const userTexts = request.prompt.messages
       .filter((message) => message.role === 'user' && typeof message.content === 'string')
       .map((message) => message.content as string);
     const lastUser = userTexts.at(-1) ?? '';

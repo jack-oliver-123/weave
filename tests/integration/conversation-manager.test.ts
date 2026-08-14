@@ -24,7 +24,7 @@ describe('对话端口集成', () => {
     for await (const event of manager.submit({ mode: 'react', content: '新问题' })) events.push(event);
 
     expect(stream).toHaveBeenCalledOnce();
-    expect(stream.mock.calls[0]?.[0].messages).toEqual([...before, { role: 'user', content: '新问题' }]);
+    expect(stream.mock.calls[0]?.[0].prompt.messages).toEqual([...before, { role: 'user', content: '新问题' }]);
     expect(store.getMessages()).toEqual([
       ...before,
       { role: 'user', content: '新问题' },
