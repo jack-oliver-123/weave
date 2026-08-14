@@ -152,3 +152,19 @@ Weave 是一个分层架构的 CodingAgent，设计原则：**每层只管自己
 ---
 
 `shared/` 中只放接口类型和常量，任何层都可以依赖它，但它不依赖任何层。
+
+---
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in the repo's GitHub Issues; skills use the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Five canonical roles, each label equal to its name: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context — one `CONTEXT.md` + `docs/adr/` at the repo root (lazy-created by `/domain-modeling`). See `docs/agents/domain.md`.
