@@ -46,14 +46,14 @@ export class OpenAIResponsesClient implements LlmClient {
     const calls = new Map<string, { readonly providerCallId: string; readonly name: string; arguments: string; done: boolean }>();
     const providerCallIds = new Set<string>();
     try {
-      const encoded = encodeResponsesRequest(request.messages, request.tools, request.systemPrompt);
+      const encoded = encodeResponsesRequest(request.prompt);
       const source = await guard.wait(this.transport({
         model: this.profile.model,
         messages: encoded.messages,
         maxTokens: request.maxTokens,
         ...this.reasoningExtension,
         ...(encoded.tools === undefined ? {} : { tools: encoded.tools, toolChoice: encoded.toolChoice }),
-        ...(encoded.systemPrompt === undefined ? {} : { instructions: encoded.systemPrompt }),
+        ...(encoded.instructions === undefined ? {} : { instructions: encoded.instructions }),
         signal: guard.signal,
       }));
       for await (const event of guard.iterate(source)) {
@@ -191,8 +191,16 @@ function responseUsage(event: unknown): TokenUsage | undefined {
   if (usage === undefined) return undefined;
   const inputTokens = readNumber(usage, 'input_tokens');
   const outputTokens = readNumber(usage, 'output_tokens');
-  if (inputTokens === undefined && outputTokens === undefined) return undefined;
-  return { ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }) };
+  const details = readRecord(usage, 'input_tokens_details');
+  const cacheReadInputTokens = readNumber(details, 'cached_tokens');
+  const cacheWriteInputTokens = readNumber(details, 'cache_write_tokens') ?? readNumber(usage, 'cache_write_tokens');
+  if ([inputTokens, outputTokens, cacheReadInputTokens, cacheWriteInputTokens].every((value) => value === undefined)) return undefined;
+  return {
+    ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(outputTokens === undefined ? {} : { outputTokens }),
+    ...(cacheReadInputTokens === undefined ? {} : { cacheReadInputTokens }),
+    ...(cacheWriteInputTokens === undefined ? {} : { cacheWriteInputTokens }),
+  };
 }
 
 function isBenignResponsesEvent(type: string | undefined): boolean {

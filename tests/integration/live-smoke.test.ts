@@ -17,12 +17,14 @@ describe('live smoke 汇总', () => {
     ]));
     const summary = await runSmoke(profile, client);
     expect(summary.turns).toEqual([
-      { turn: 1, fragments: 1, status: 'completed', usage: { inputTokens: 3, outputTokens: 2 } },
-      { turn: 2, fragments: 1, status: 'completed', usage: { inputTokens: 3, outputTokens: 2 } },
+      { turn: 1, fragments: 1, status: 'completed', cacheMetrics: 'unverifiable', usage: { inputTokens: 3, outputTokens: 2 } },
+      { turn: 2, fragments: 1, status: 'completed', cacheMetrics: 'unverifiable', usage: { inputTokens: 3, outputTokens: 2 } },
     ]);
     const serialized = JSON.stringify(summary);
     expect(serialized).not.toContain(profile.apiKey);
     expect(serialized).not.toContain('不应记录的回答');
     expect(serialized).not.toContain('编写可靠软件测试');
+    expect(summary.promptVersion).toBe('1.0.2');
+    expect(summary.stableHash).toMatch(/^[a-f0-9]{64}$/);
   });
 });

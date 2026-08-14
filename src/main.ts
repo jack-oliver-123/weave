@@ -6,6 +6,7 @@ import { parseCliArgs, assertSupportedNodeVersion, helpText } from './config/cli
 import { loadConfig } from './config/index.js';
 import { resolveWorkspace } from './config/workspace.js';
 import { ConversationManager } from './engine/conversation-manager.js';
+import { createEnvironmentContext } from './engine/prompt-environment.js';
 import { createLlmClient } from './engine/llm/factory.js';
 import { runTui } from './interaction/weave-tui.js';
 import { InMemoryConversationStore } from './memory/conversation-store.js';
@@ -41,6 +42,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   }
   const conversation = new ConversationManager(client, store, {
     maxTokens: config.selected.maxTokens,
+    environment: createEnvironmentContext(workspaceConfig.root),
     ...(tools === undefined ? {} : { tools }),
   });
   await runTui({

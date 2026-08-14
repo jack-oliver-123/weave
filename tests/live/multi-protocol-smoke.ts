@@ -2,6 +2,7 @@ import { pathToFileURL } from 'node:url';
 import { loadConfig, type ResolvedProfile } from '../../src/config/index.js';
 import { ConversationManager } from '../../src/engine/conversation-manager.js';
 import { createLlmClient } from '../../src/engine/llm/factory.js';
+import { buildStableSystemPrompt } from '../../src/engine/prompt-assembly.js';
 import { InMemoryConversationStore } from '../../src/memory/conversation-store.js';
 import type { LlmClient, TokenUsage, TurnCompletionStatus } from '../../src/shared/types.js';
 
@@ -10,12 +11,15 @@ interface SmokeTurnSummary {
   readonly fragments: number;
   readonly status: TurnCompletionStatus;
   readonly usage?: TokenUsage;
+  readonly cacheMetrics: 'observable' | 'unverifiable';
 }
 
 export interface SmokeSummary {
   readonly profile: string;
   readonly protocol: string;
   readonly model: string;
+  readonly promptVersion: string;
+  readonly stableHash: string;
   readonly turns: readonly SmokeTurnSummary[];
 }
 
@@ -39,6 +43,7 @@ export async function runSmoke(profile: ResolvedProfile, client: LlmClient = cre
           turn: index + 1,
           fragments,
           status: event.status,
+          cacheMetrics: event.usage?.cacheReadInputTokens === undefined && event.usage?.cacheWriteInputTokens === undefined ? 'unverifiable' : 'observable',
           ...(event.usage === undefined ? {} : { usage: event.usage }),
         };
       }
@@ -51,7 +56,8 @@ export async function runSmoke(profile: ResolvedProfile, client: LlmClient = cre
     turns.push(terminal);
   }
 
-  return { profile: profile.name, protocol: profile.protocol, model: profile.model, turns };
+  const stable = buildStableSystemPrompt();
+  return { profile: profile.name, protocol: profile.protocol, model: profile.model, promptVersion: stable.promptVersion, stableHash: stable.hash, turns };
 }
 
 function parseArgs(args: readonly string[]): { configPath?: string; profileName: string } {

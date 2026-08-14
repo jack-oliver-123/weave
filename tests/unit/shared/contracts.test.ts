@@ -6,6 +6,7 @@ import type {
   LlmClient,
   LlmRequest,
   LlmStreamEvent,
+  PromptAssembly,
   ProfileSummary,
   SafeError,
   ToolCallRequest,
@@ -44,7 +45,7 @@ describe('shared contracts', () => {
       ],
     ]);
     const request: LlmRequest = {
-      messages: [{ role: 'user', content: '你好' }],
+      prompt: {} as PromptAssembly,
       maxTokens: 4096,
       signal: new AbortController().signal,
     };
@@ -61,6 +62,12 @@ describe('shared contracts', () => {
       'stream_complete',
     ]);
     expect(client.requests).toHaveLength(1);
+  });
+
+  it('uses one structured prompt assembly and cache-aware usage', () => {
+    expectTypeOf<LlmRequest['prompt']>().toEqualTypeOf<PromptAssembly>();
+    const usage = { inputTokens: 10, outputTokens: 2, cacheReadInputTokens: 8, cacheWriteInputTokens: 0 };
+    expect(usage.cacheWriteInputTokens).toBe(0);
   });
 
   it('exposes only safe error fields', () => {

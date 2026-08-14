@@ -22,7 +22,7 @@ describe('OpenAIResponsesClient', () => {
       { type: 'response.output_text.delta', delta: '好' },
       {
         type: 'response.completed',
-        response: { usage: { input_tokens: 12, output_tokens: 5 } },
+        response: { usage: { input_tokens: 12, output_tokens: 5, input_tokens_details: { cached_tokens: 7, cache_write_tokens: 3 } } },
       },
     ]));
     const client = new OpenAIResponsesClient(profile, { transport });
@@ -34,11 +34,13 @@ describe('OpenAIResponsesClient', () => {
       {
         type: 'stream_complete',
         finishReason: 'stop',
-        usage: { inputTokens: 12, outputTokens: 5 },
+        usage: { inputTokens: 12, outputTokens: 5, cacheReadInputTokens: 7, cacheWriteInputTokens: 3 },
       },
     ]);
     const sent = transport.mock.calls[0]?.[0];
-    expect(sent).toMatchObject({ messages: request().messages, maxTokens: 321 });
+    expect(sent).toMatchObject({ messages: request().prompt.messages, maxTokens: 321 });
+    expect(sent.instructions).toContain('<identity>');
+    expect(sent.instructions).toContain('<system-reminder>');
     expect(sent).not.toHaveProperty('previousResponseId');
     expect(sent).not.toHaveProperty('thinking');
     expect(sent).not.toHaveProperty('reasoning');

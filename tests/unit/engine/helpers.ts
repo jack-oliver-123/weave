@@ -1,12 +1,18 @@
 import type { LlmRequest, LlmStreamEvent } from '../../../src/shared/types.js';
+import { assemblePrompt } from '../../../src/engine/prompt-assembly.js';
+import { buildRuntimeState } from '../../../src/engine/prompt-builder.js';
 
 export function request(signal = new AbortController().signal): LlmRequest {
   return {
-    messages: [
-      { role: 'user', content: '第一问' },
-      { role: 'assistant', content: '第一答' },
-      { role: 'user', content: '第二问' },
-    ],
+    prompt: assemblePrompt({
+      runtime: buildRuntimeState({ mode: 'react', iterationLimit: 10 }),
+      tools: [],
+      messages: [
+        { role: 'user', content: '第一问' },
+        { role: 'assistant', content: '第一答' },
+        { role: 'user', content: '第二问' },
+      ],
+    }),
     maxTokens: 321,
     signal,
   };

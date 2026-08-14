@@ -16,6 +16,7 @@ profiles:
     api_key: ${OPENAI_API_KEY}
     thinking: false
     max_tokens: 4096
+    chat_system_mode: multiple
 
   - name: openai-responses
     protocol: openai-responses

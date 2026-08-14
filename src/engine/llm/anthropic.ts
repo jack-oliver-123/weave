@@ -14,7 +14,7 @@ interface AnthropicTransportRequest {
   readonly thinking: DisabledThinking;
   readonly tools?: readonly unknown[];
   readonly toolChoice?: unknown;
-  readonly systemPrompt?: string;
+  readonly system?: readonly unknown[];
   readonly signal: AbortSignal;
 }
 
@@ -37,12 +37,14 @@ export class AnthropicMessagesClient implements LlmClient {
   private readonly timeoutMs: number;
   private readonly transport: AnthropicTransport;
   private readonly createCallId: () => string;
+  private readonly explicitPromptCaching: boolean;
 
   constructor(profile: ResolvedProfile, options: AnthropicClientOptions = {}) {
     this.profile = { name: profile.name, protocol: profile.protocol, model: profile.model };
     this.timeoutMs = options.timeoutMs ?? 120_000;
     this.transport = options.transport ?? createSdkTransport(profile);
     this.createCallId = options.createCallId ?? randomUUID;
+    this.explicitPromptCaching = isOfficialAnthropicEndpoint(profile.baseUrl);
   }
 
   async *stream(request: LlmRequest): AsyncGenerator<LlmStreamEvent> {
@@ -56,16 +58,18 @@ export class AnthropicMessagesClient implements LlmClient {
     let stoppedForTools = false;
     let inputTokens: number | undefined;
     let outputTokens: number | undefined;
+    let cacheReadInputTokens: number | undefined;
+    let cacheWriteInputTokens: number | undefined;
 
     try {
-      const encoded = encodeAnthropicRequest(request.messages, request.tools, request.systemPrompt);
+      const encoded = encodeAnthropicRequest(request.prompt, this.explicitPromptCaching);
       const source = await guard.wait(this.transport({
         model: this.profile.model,
         messages: encoded.messages,
         maxTokens: request.maxTokens,
         thinking: DISABLED_THINKING,
         ...(encoded.tools === undefined ? {} : { tools: encoded.tools, toolChoice: encoded.toolChoice }),
-        ...(encoded.systemPrompt === undefined ? {} : { systemPrompt: encoded.systemPrompt }),
+        ...(encoded.system === undefined ? {} : { system: encoded.system }),
         signal: guard.signal,
       }));
       for await (const event of guard.iterate(source)) {
@@ -77,6 +81,8 @@ export class AnthropicMessagesClient implements LlmClient {
           if (started) throw new ProtocolError();
           const usage = readRecord(readRecord(event, 'message'), 'usage');
           inputTokens = readNumber(usage, 'input_tokens');
+          cacheReadInputTokens = readNumber(usage, 'cache_read_input_tokens');
+          cacheWriteInputTokens = readNumber(usage, 'cache_creation_input_tokens');
           started = true;
           yield { type: 'stream_start' };
           continue;
@@ -141,7 +147,7 @@ export class AnthropicMessagesClient implements LlmClient {
         }
         if (type === 'message_stop') {
           if (activeBlock !== undefined || !sawMessageDelta || finishReason === undefined) throw new ProtocolError();
-          const usage = buildUsage(inputTokens, outputTokens);
+          const usage = buildUsage(inputTokens, outputTokens, cacheReadInputTokens, cacheWriteInputTokens);
           if (calls.length > 0 && !stoppedForTools) throw new ProtocolError();
           if (stoppedForTools && calls.length === 0) throw new ProtocolError();
           if (calls.length > 0) yield { type: 'tool_calls', calls: calls.map((call) => ({
@@ -167,13 +173,13 @@ export class AnthropicMessagesClient implements LlmClient {
 
 function createSdkTransport(profile: ResolvedProfile): AnthropicTransport {
   const client = new Anthropic({ apiKey: profile.apiKey, baseURL: profile.baseUrl, maxRetries: 0 });
-  return ({ model, messages, maxTokens, thinking, tools, toolChoice, systemPrompt, signal }) => client.messages.stream({
+  return ({ model, messages, maxTokens, thinking, tools, toolChoice, system, signal }) => client.messages.stream({
     model,
     max_tokens: maxTokens,
     messages: messages as Anthropic.MessageParam[],
     thinking,
     ...(tools === undefined ? {} : { tools: tools as Anthropic.Tool[], tool_choice: toolChoice as Anthropic.ToolChoiceAuto }),
-    ...(systemPrompt === undefined ? {} : { system: systemPrompt }),
+    ...(system === undefined ? {} : { system: system as Anthropic.TextBlockParam[] }),
   }, { signal });
 }
 
@@ -188,7 +194,16 @@ function mapAnthropicFinishReason(reason: string): FinishReason {
   return 'unknown';
 }
 
-function buildUsage(inputTokens?: number, outputTokens?: number): TokenUsage | undefined {
-  if (inputTokens === undefined && outputTokens === undefined) return undefined;
-  return { ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }) };
+function buildUsage(inputTokens?: number, outputTokens?: number, cacheReadInputTokens?: number, cacheWriteInputTokens?: number): TokenUsage | undefined {
+  if ([inputTokens, outputTokens, cacheReadInputTokens, cacheWriteInputTokens].every((value) => value === undefined)) return undefined;
+  return {
+    ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(outputTokens === undefined ? {} : { outputTokens }),
+    ...(cacheReadInputTokens === undefined ? {} : { cacheReadInputTokens }),
+    ...(cacheWriteInputTokens === undefined ? {} : { cacheWriteInputTokens }),
+  };
+}
+
+function isOfficialAnthropicEndpoint(baseUrl: string): boolean {
+  try { return new URL(baseUrl).hostname === 'api.anthropic.com'; } catch { return false; }
 }

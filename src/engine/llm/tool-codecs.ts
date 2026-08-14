@@ -1,4 +1,5 @@
-import type { ChatMessage, MessageContent, ToolCallResult, ToolDefinition } from '../../shared/types.js';
+import type { ChatMessage, MessageContent, PromptAssembly, ToolCallResult } from '../../shared/types.js';
+import type { ChatSystemMode } from '../../config/index.js';
 import { formatToolDescription } from '../../tool/description.js';
 import { InternalLlmError, ProtocolError } from './errors.js';
 
@@ -8,32 +9,42 @@ export interface EncodedToolRequest {
   readonly messages: readonly unknown[];
   readonly tools?: readonly unknown[];
   readonly toolChoice?: unknown;
-  readonly systemPrompt?: string;
+  readonly system?: readonly unknown[];
+  readonly instructions?: string;
 }
 
-export function encodeAnthropicRequest(messages: readonly ChatMessage[], tools?: readonly ToolDefinition[], systemPrompt?: string): EncodedToolRequest {
+export function encodeAnthropicRequest(prompt: PromptAssembly, explicitCaching = false): EncodedToolRequest {
   return {
-    messages: messages.flatMap(encodeAnthropicMessage),
-    ...(tools === undefined || tools.length === 0 ? {} : {
-      tools: tools.map((definition) => ({
+    messages: prompt.messages.flatMap(encodeAnthropicMessage),
+    system: [
+      { type: 'text', text: prompt.system.stable.text, ...(explicitCaching ? { cache_control: { type: 'ephemeral' } } : {}) },
+      ...(prompt.system.reminder === undefined ? [] : [{ type: 'text', text: prompt.system.reminder.text }]),
+    ],
+    ...(prompt.tools.length === 0 ? {} : {
+      tools: prompt.tools.map((definition) => ({
         name: definition.name,
         description: formatToolDescription(definition),
         input_schema: definition.inputSchema,
       })),
       toolChoice: { type: 'auto' },
-      ...(systemPrompt === undefined ? {} : { systemPrompt }),
     }),
   };
 }
 
-export function encodeChatRequest(messages: readonly ChatMessage[], tools?: readonly ToolDefinition[], systemPrompt?: string): EncodedToolRequest {
+export function encodeChatRequest(prompt: PromptAssembly, systemMode: ChatSystemMode = 'multiple'): EncodedToolRequest {
+  const systemMessages = systemMode === 'single'
+    ? [{ role: 'system', content: [prompt.system.stable.text, prompt.system.reminder?.text].filter((item): item is string => item !== undefined).join('\n\n') }]
+    : [
+        { role: 'system', content: prompt.system.stable.text },
+        ...(prompt.system.reminder === undefined ? [] : [{ role: 'system', content: prompt.system.reminder.text }]),
+      ];
   return {
     messages: [
-      ...(tools === undefined || tools.length === 0 || systemPrompt === undefined ? [] : [{ role: 'system', content: systemPrompt }]),
-      ...messages.flatMap(encodeChatMessage),
+      ...systemMessages,
+      ...prompt.messages.flatMap(encodeChatMessage),
     ],
-    ...(tools === undefined || tools.length === 0 ? {} : {
-      tools: tools.map((definition) => ({
+    ...(prompt.tools.length === 0 ? {} : {
+      tools: prompt.tools.map((definition) => ({
         type: 'function',
         function: {
           name: definition.name,
@@ -46,18 +57,18 @@ export function encodeChatRequest(messages: readonly ChatMessage[], tools?: read
   };
 }
 
-export function encodeResponsesRequest(messages: readonly ChatMessage[], tools?: readonly ToolDefinition[], systemPrompt?: string): EncodedToolRequest {
+export function encodeResponsesRequest(prompt: PromptAssembly): EncodedToolRequest {
   return {
-    messages: messages.flatMap(encodeResponsesMessage),
-    ...(tools === undefined || tools.length === 0 ? {} : {
-      tools: tools.map((definition) => ({
+    messages: prompt.messages.flatMap(encodeResponsesMessage),
+    instructions: [prompt.system.stable.text, prompt.system.reminder?.text].filter((item): item is string => item !== undefined).join('\n\n'),
+    ...(prompt.tools.length === 0 ? {} : {
+      tools: prompt.tools.map((definition) => ({
         type: 'function',
         name: definition.name,
         description: formatToolDescription(definition),
         parameters: definition.inputSchema,
       })),
       toolChoice: 'auto',
-      ...(systemPrompt === undefined ? {} : { systemPrompt }),
     }),
   };
 }

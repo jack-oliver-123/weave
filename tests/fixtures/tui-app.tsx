@@ -28,10 +28,10 @@ class TuiFixtureClient implements LlmClient {
     }
 
     if (this.requestCount === 2) {
-      const queueIsMerged = request.messages.length === 3
-        && request.messages[0]?.content === 'first-question'
-        && request.messages[1]?.content === '### first-chunk\n\n**second-chunk**'
-        && request.messages[2]?.content === 'queued-one\n\nqueued-two';
+      const queueIsMerged = request.prompt.messages.length === 3
+        && request.prompt.messages[0]?.content === 'first-question'
+        && request.prompt.messages[1]?.content === '### first-chunk\n\n**second-chunk**'
+        && request.prompt.messages[2]?.content === 'queued-one\n\nqueued-two';
       yield { type: 'text_delta', delta: queueIsMerged ? '### queue-ok\n\n' : '### queue-missing\n\n' };
       yield { type: 'text_delta', delta: '| 名称 | 说明 |\n| --- | --- |\n| Weave | 终端助手 |\n\n```ts\nconst longName = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz";\n```\n' };
       yield { type: 'stream_complete', finishReason: 'stop', usage: { inputTokens: 9, outputTokens: 24 } };
@@ -39,8 +39,8 @@ class TuiFixtureClient implements LlmClient {
     }
 
     if (this.requestCount === 3) {
-      const historyIsComplete = request.messages.length === 5
-        && request.messages[4]?.content === 'line-one\nline-two';
+      const historyIsComplete = request.prompt.messages.length === 5
+        && request.prompt.messages[4]?.content === 'line-one\nline-two';
       yield { type: 'text_delta', delta: historyIsComplete ? 'history-ok\n' : 'history-missing\n' };
       await delay(700, request.signal);
       yield { type: 'text_delta', delta: `${Array.from({ length: 32 }, (_, index) => `long-line-${String(index + 1).padStart(2, '0')}`).join('\n')}\n${historyIsComplete ? 'history-ok-tail' : 'history-missing-tail'}` };
@@ -61,7 +61,7 @@ class TuiFixtureClient implements LlmClient {
     }
 
     if (this.requestCount === 5) {
-      const resumed = request.messages.at(-1)?.content === 'after-cancel';
+      const resumed = request.prompt.messages.at(-1)?.content === 'after-cancel';
       yield { type: 'text_delta', delta: resumed ? 'resume-ok' : 'resume-missing' };
       yield { type: 'stream_complete', finishReason: 'stop' };
       return;

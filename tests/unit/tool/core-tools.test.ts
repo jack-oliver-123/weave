@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createCoreToolRegistry } from '../../../src/tool/core-tools.js';
 import { Workspace } from '../../../src/tool/workspace.js';
+import { TOOL_USAGE_RULES } from '../../../src/engine/prompt-rules.js';
+import { buildStableSystemPrompt } from '../../../src/engine/prompt-assembly.js';
 
 async function setup() {
   const root = await mkdtemp(join(tmpdir(), 'weave-tools-'));
@@ -22,6 +24,16 @@ describe('six core tools', () => {
       ['read_file', 'read_shared'], ['create_file', 'write_exclusive'], ['edit_file', 'write_exclusive'],
       ['bash', 'write_exclusive'], ['glob', 'read_shared'], ['grep', 'read_shared'],
     ]);
+  });
+
+  it('uses one authoritative rule source for global and write-tool guidance', async () => {
+    const { registry } = await setup();
+    const definitions = new Map(registry.listDefinitions().map((item) => [item.name, item]));
+    expect(buildStableSystemPrompt().text).toContain(TOOL_USAGE_RULES.preferSpecialized);
+    expect(definitions.get('edit_file')?.useWhen.join(' ')).toContain(TOOL_USAGE_RULES.readBeforeEdit);
+    expect(definitions.get('edit_file')?.useWhen.join(' ')).toContain(TOOL_USAGE_RULES.refreshEvidence);
+    expect(definitions.get('edit_file')?.useWhen.join(' ')).toContain(TOOL_USAGE_RULES.generatedFiles);
+    expect(definitions.get('create_file')?.useWhen.join(' ')).toContain(TOOL_USAGE_RULES.createNewFile);
   });
 
   it('read_file supports ranges, BOM and bounded continuation metadata', async () => {

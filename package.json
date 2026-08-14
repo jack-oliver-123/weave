@@ -25,6 +25,7 @@
     "e2e:tui:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/e2e/tui-windows.ps1",
     "e2e:tui:wsl": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/e2e/tui-wsl.ps1",
     "smoke:live": "tsx tests/live/multi-protocol-smoke.ts",
+    "compare:prompt": "tsx tests/live/prompt-quality-comparison.ts",
     "smoke:tui:wsl": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/live/tui-wsl-smoke.ps1",
     "docs:link": "node scripts/ensure-docs-link.mjs",
     "docs:dev": "vitepress docs",

@@ -25,4 +25,6 @@ Weave 是支持 Anthropic Messages、OpenAI Chat Completions 和 OpenAI Response
 
 参考仓库根目录的 `config.example.yaml`。工具开关优先级为命令行、当前 profile、配置根节点、默认值 `true`。
 
+OpenAI Chat Completions profile 默认使用连续两个 `system` 消息分别承载稳定指令和动态提醒。仅当兼容端点不支持这种形式时，将该 profile 的 `chat_system_mode` 显式设为 `single`；此时两段内容合并为一个 `system` 消息，不会降级为 user 消息。该字段不适用于其他协议。
+
 - [OpenSpec 变更](/changes/)

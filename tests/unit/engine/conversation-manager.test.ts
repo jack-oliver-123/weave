@@ -27,7 +27,7 @@ describe('ConversationManager', () => {
       expect.objectContaining({ taskId: 'task-1', runId: 'run-1', iteration: 1, phase: 'completed' }),
     ]);
     expect(second.every((event) => event.turnId === 'turn-2')).toBe(true);
-    expect(client.requests[1]?.messages.slice(0, 3)).toEqual([
+    expect(client.requests[1]?.prompt.messages.slice(0, 3)).toEqual([
       { role: 'user', content: '第一问' },
       { role: 'assistant', content: '答一\n\n验证：验证通过' },
       { role: 'user', content: '第二问' },
@@ -78,7 +78,7 @@ describe('ConversationManager', () => {
     expect(first[0]).toMatchObject({ type: 'turn_start', taskMode: 'plan', taskPhase: 'plan_draft' });
     expect(first).toContainEqual(expect.objectContaining({ type: 'task_state', state: 'awaiting_input', questionId: 'question-1' }));
     const second = await collect(manager.submit({ mode: 'react', content: '只做核心范围' }));
-    expect(client.requests[1]?.tools?.map((tool) => tool.name)).toContain('submit_plan');
+    expect(client.requests[1]?.prompt.tools.map((tool) => tool.name)).toContain('submit_plan');
     expect(second).toContainEqual(expect.objectContaining({ type: 'plan_ready' }));
     expect(second.at(-1)).toMatchObject({ type: 'turn_complete', usage: { inputTokens: 3, outputTokens: 2 } });
   });
@@ -92,7 +92,7 @@ describe('ConversationManager', () => {
     expect(stopped.at(-1)).toMatchObject({ type: 'turn_error', error: { code: 'AGENT_LOOP_LIMIT_REACHED' } });
 
     const continued = await collect(manager.dispatch({ type: 'continue_task', taskId: 'task-1' }));
-    expect(client.requests[10]?.tools?.map((tool) => tool.name)).toContain('submit_plan');
+    expect(client.requests[10]?.prompt.tools.map((tool) => tool.name)).toContain('submit_plan');
     expect(continued).toContainEqual(expect.objectContaining({ type: 'plan_ready' }));
   });
 
@@ -112,7 +112,7 @@ describe('ConversationManager', () => {
 
     const refined = await collect(manager.dispatch({ type: 'continue_task', taskId: ready.taskId, content: '扩大目标' }));
     const next = refined.find((event): event is Extract<TurnEvent, { type: 'plan_ready' }> => event.type === 'plan_ready')!;
-    expect(client.requests.at(-1)?.tools?.map((tool) => tool.name)).toContain('submit_plan');
+    expect(client.requests.at(-1)?.prompt.tools.map((tool) => tool.name)).toContain('submit_plan');
     expect(next.plan).toMatchObject({ planId: ready.plan.planId, version: 2, goal: '扩展交付' });
   });
 
