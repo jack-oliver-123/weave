@@ -157,6 +157,10 @@ Weave 是一个分层架构的 CodingAgent，设计原则：**每层只管自己
 
 ## Agent skills
 
+### 变更流程
+
+开始任何功能、Bug、配置或文档修改前，读取 `docs/agents/openspec-workflow.md`，先报告 `quick`、`standard` 或 `large` 及理由，再遵循对应流程。
+
 ### Issue tracker
 
 Issues live in the repo's GitHub Issues; skills use the `gh` CLI. See `docs/agents/issue-tracker.md`.

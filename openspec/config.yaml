@@ -19,14 +19,20 @@ schema: spec-driven
 #     tasks:
 #       - Break tasks into chunks of max 2 hours
 
-# Per-operation guidance (optional)
-# Add advisory guidance for how apply and archive work should be conducted.
-# This is separate from artifact rules above.
-# Example:
-#   operations:
-#     apply:
-#       guidance:
-#         - Keep test summaries concise
-#     archive:
-#       guidance:
-#         - Summarize the archive outcome before finishing
+rules:
+  tasks:
+    - 每个 task 必须是单个上下文窗口可完成且可独立验证的 tracer-bullet
+      纵向切片；宽范围机械重构使用 expand-contract 任务链。
+
+operations:
+  apply:
+    guidance:
+      - 实现前读取 `docs/agents/openspec-workflow.md`，遵循其中的 Apply、Review 与验证
+        章节；OpenSpec artifacts 是唯一真相，GitHub Issues 只是执行镜像。
+      - 读取全部 contextFiles 后，检查每个未完成 task 是否包含格式为
+        `([#123](https://github.com/<owner>/<repo>/issues/123))` 的有效 Issue 映射。
+        缺失时停止并要求用户先显式运行 `/to-tickets <tasks.md 路径>`。
+      - 识别并确认 seams，记录实现前的基线 SHA，按未阻塞 task 执行 TDD；所有 tasks
+        完成后运行 code-review、返修并复审，随后运行 OpenSpec Verify。Verify 通过后
+        才能依次建议 spec sync 和 archive；archive 成功后自动刷新 archived WIKI
+        投影并执行文档构建，OpenSpec artifacts 始终是唯一事实来源。
