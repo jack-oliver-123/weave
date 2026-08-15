@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { ConversationManager } from '../../../src/engine/conversation-manager.js';
 import { InMemoryConversationStore } from '../../../src/memory/conversation-store.js';
 import { ToolCallScheduler } from '../../../src/tool/scheduler.js';
+import { SchedulerToolExecutor } from '../../../src/tool/executor.js';
 import type { LlmStreamEvent, ToolCallRequest, ToolCallResult, ToolDefinition, TurnEvent } from '../../../src/shared/types.js';
 import { FakeLlmClient, fakeProfile } from '../../fixtures/fake-llm-client.js';
 import { CONTROL_DECISION_CHECKPOINT } from '../../../src/engine/prompt-rules.js';
+import { createTestActionGateway } from '../../fixtures/test-action-gateway.js';
 
 const definition: ToolDefinition = {
   name: 'read_file', purpose: '读取文件', useWhen: ['需要内容'], avoidWhen: ['需要修改'],
@@ -40,8 +42,8 @@ describe('ConversationManager AgentLoop 边界', () => {
     expect(completedEvent.promptAudits?.every((audit) => /^[a-f0-9]{64}$/.test(audit.stableHash) && /^[a-f0-9]{64}$/.test(audit.assemblyHash))).toBe(true);
     expect(JSON.stringify(completedEvent.promptAudits)).not.toContain('读取文件');
     expect(JSON.stringify(completedEvent.promptAudits)).not.toContain('内部行动说明');
-    expect(client.requests[1]?.prompt.system.reminder?.text).toContain(CONTROL_DECISION_CHECKPOINT);
-    expect(store.getMessages().map((message) => message.role)).toEqual(['user', 'assistant', 'tool', 'assistant']);
+    expect(JSON.stringify(client.requests[1]?.prompt.messages)).toContain(CONTROL_DECISION_CHECKPOINT);
+    expect(store.getMessages().map((message) => message.role)).toEqual(['user', 'assistant']);
   });
 
   it('工具失败作为观察回传，随后仍可完成', async () => {
@@ -56,7 +58,7 @@ describe('ConversationManager AgentLoop 边界', () => {
     const store = new InMemoryConversationStore();
     const events = await collect(manager(client, store).submit({ mode: 'react', content: '执行' }));
     expect(events.at(-1)).toMatchObject({ type: 'turn_error', error: { code: 'PROTOCOL_ERROR' } });
-    expect(store.getMessages().map((message) => message.role)).toEqual(['user', 'assistant', 'tool', 'assistant']);
+    expect(store.getMessages().map((message) => message.role)).toEqual(['user', 'assistant']);
   });
 
   it('十次不同批次后硬停止且不额外调用模型', async () => {
@@ -90,6 +92,9 @@ function manager(client: FakeLlmClient, store: InMemoryConversationStore, fail =
       : { callId: request.callId, providerCallId: request.providerCallId, toolName: request.name, isError: false, content: { summary: '完成', data: { content: 'hello' } } };
   };
   const scheduler = new ToolCallScheduler({ definitions: [definition], dispatch });
-  return new ConversationManager(client, store, { maxTokens: 100, tools: { definitions: [definition], scheduler } });
+  const executor = new SchedulerToolExecutor([definition], scheduler);
+  return new ConversationManager(client, store, {
+    maxTokens: 100, actionGateway: createTestActionGateway(client, executor), availableTools: [definition],
+  });
 }
 async function collect(events: AsyncIterable<TurnEvent>): Promise<TurnEvent[]> { const result: TurnEvent[] = []; for await (const event of events) result.push(event); return result; }

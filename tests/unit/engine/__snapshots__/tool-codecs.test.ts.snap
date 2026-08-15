@@ -2,7 +2,12 @@
 
 exports[`tool protocol codecs > 从同一中立定义生成三种等价工具定义与 auto 选择 1`] = `
 {
-  "messages": [],
+  "messages": [
+    {
+      "content": "{"content":{"iterationLimit":10,"mode":"react","type":"agent_state"},"kind":"runtime_state","source":"weave-runtime","trust":"untrusted_context"}",
+      "role": "user",
+    },
+  ],
   "system": [
     {
       "cache_control": {
@@ -67,12 +72,6 @@ Plan 规划时先只读调查并调用 submit_plan；执行时只推进当前步
 结论优先，回答精简务实。保留完成任务所需的证据、关键假设、验证状态和残余风险，优先删除重复与无关背景。
 明确区分已通过、失败、未运行和受外部条件阻塞；不要用统一字数限制省略必要信息。
 </text_output>",
-      "type": "text",
-    },
-    {
-      "text": "<system-reminder>
-<fragment kind="runtime_state" source="weave-runtime" trust="trusted_runtime">{&quot;iterationLimit&quot;:10,&quot;mode&quot;:&quot;react&quot;,&quot;type&quot;:&quot;agent_state&quot;}</fragment>
-</system-reminder>",
       "type": "text",
     },
   ],
@@ -173,10 +172,8 @@ Plan 规划时先只读调查并调用 submit_plan；执行时只推进当前步
       "role": "system",
     },
     {
-      "content": "<system-reminder>
-<fragment kind="runtime_state" source="weave-runtime" trust="trusted_runtime">{&quot;iterationLimit&quot;:10,&quot;mode&quot;:&quot;react&quot;,&quot;type&quot;:&quot;agent_state&quot;}</fragment>
-</system-reminder>",
-      "role": "system",
+      "content": "{"content":{"iterationLimit":10,"mode":"react","type":"agent_state"},"kind":"runtime_state","source":"weave-runtime","trust":"untrusted_context"}",
+      "role": "user",
     },
   ],
   "toolChoice": "auto",
@@ -271,12 +268,13 @@ Plan 规划时先只读调查并调用 submit_plan；执行时只推进当前步
 默认跟随用户当前使用的语言；用户明确指定语言时服从指定。代码标识符、命令、路径和协议关键词保留必要原文。
 结论优先，回答精简务实。保留完成任务所需的证据、关键假设、验证状态和残余风险，优先删除重复与无关背景。
 明确区分已通过、失败、未运行和受外部条件阻塞；不要用统一字数限制省略必要信息。
-</text_output>
-
-<system-reminder>
-<fragment kind="runtime_state" source="weave-runtime" trust="trusted_runtime">{&quot;iterationLimit&quot;:10,&quot;mode&quot;:&quot;react&quot;,&quot;type&quot;:&quot;agent_state&quot;}</fragment>
-</system-reminder>",
-  "messages": [],
+</text_output>",
+  "messages": [
+    {
+      "content": "{"content":{"iterationLimit":10,"mode":"react","type":"agent_state"},"kind":"runtime_state","source":"weave-runtime","trust":"untrusted_context"}",
+      "role": "user",
+    },
+  ],
   "toolChoice": "auto",
   "tools": [
     {

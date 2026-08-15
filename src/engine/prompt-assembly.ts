@@ -22,17 +22,19 @@ export function assemblePrompt(input: AssemblePromptInput): PromptAssembly {
   const fragments: SystemReminderFragment[] = [runtimeFragment(input.runtime)];
   if (input.environment !== undefined) fragments.push(environmentFragment(input.environment));
   fragments.push(...(input.extensions ?? []));
-  const reminder = buildSystemReminder(fragments);
+  fragments.forEach(validateFragment);
+  const dynamicMessages = fragments
+    .filter((item) => serializeFragmentContent(item).length > 0)
+    .map(serializeUntrustedFragment);
   const tools = Object.freeze([...input.tools]);
-  const messages = Object.freeze([...input.messages]);
+  const messages = Object.freeze([...dynamicMessages, ...input.messages]);
   const assemblyHash = hash(stableJson({
     stable: stable.text,
-    reminder: reminder.text,
     tools,
     messages,
   }));
   return Object.freeze({
-    system: Object.freeze({ stable, ...(reminder.fragments.length === 0 ? {} : { reminder }) }),
+    system: Object.freeze({ stable }),
     tools,
     messages,
     audit: Object.freeze({
@@ -40,11 +42,21 @@ export function assemblePrompt(input: AssemblePromptInput): PromptAssembly {
       stableHash: stable.hash,
       assemblyHash,
       modules: Object.freeze(stable.modules.map((item) => Object.freeze({ id: item.id, version: item.version, characters: item.content.length }))),
-      fragments: Object.freeze(reminder.fragments.map((item) => Object.freeze({
-        kind: item.kind, source: item.source, trust: item.trust, characters: serializeFragmentContent(item).length,
+      fragments: Object.freeze(fragments.map((item) => Object.freeze({
+        kind: item.kind, source: item.source, trust: 'untrusted_context' as const, characters: serializeFragmentContent(item).length,
       }))),
     }),
   });
+}
+
+function serializeUntrustedFragment(fragment: SystemReminderFragment): ChatMessage {
+  const content = stableJson({
+    kind: fragment.kind,
+    source: fragment.source,
+    trust: 'untrusted_context',
+    content: fragment.content,
+  }).replaceAll('&', '\\u0026').replaceAll('<', '\\u003c').replaceAll('>', '\\u003e');
+  return Object.freeze({ role: 'user', content });
 }
 
 export function buildPromptCompletionAudit(audit: PromptAudit, profile: ProfileSummary, usage?: TokenUsage): PromptCompletionAudit {

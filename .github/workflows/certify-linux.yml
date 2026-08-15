@@ -1,0 +1,38 @@
+name: Certify Linux Sandbox
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  certify-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      WEAVE_BACKEND_VERSION: linux-userns-v1
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.x
+          cache: npm
+      - run: npm ci
+      - name: Run real Linux namespace certification
+        id: certification
+        env:
+          WEAVE_BACKEND_CERTIFICATION: linux
+        run: npx vitest run tests/certification/wsl2-read-tools.test.ts
+      - name: Write bound evidence
+        if: always()
+        run: node scripts/write-certification-evidence.mjs linux "${{ steps.certification.outcome }}" FilesystemRead,FilesystemWrite,ProcessSpawn process_identity,host_paths_hidden,raw_network_blocked,environment_cleared,devices_hidden,privilege_escalation_blocked,resource_limits,process_tree_cleanup,control_ipc_hidden,brokers_hidden
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: certification-linux-${{ github.sha }}
+          path: artifacts/certification/linux.json
+          if-no-files-found: error

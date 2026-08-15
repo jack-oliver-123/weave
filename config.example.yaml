@@ -6,14 +6,14 @@ profiles:
     protocol: anthropic-messages
     model: claude-model-name
     base_url: https://api.anthropic.com
-    api_key: ${ANTHROPIC_API_KEY}
+    credential: provider:anthropic
     thinking: false
     max_tokens: 4096
   - name: openai-chat
     protocol: openai-chat-completions
     model: openai-model-name
     base_url: https://api.openai.com/v1
-    api_key: ${OPENAI_API_KEY}
+    credential: provider:openai
     thinking: false
     max_tokens: 4096
     chat_system_mode: multiple
@@ -22,6 +22,6 @@ profiles:
     protocol: openai-responses
     model: openai-model-name
     base_url: https://api.openai.com/v1
-    api_key: ${OPENAI_API_KEY}
+    credential: provider:openai
     thinking: false
     max_tokens: 4096

@@ -139,7 +139,83 @@ describe('TUI 交互集成', () => {
     await waitFor(() => controller.actions.length === 1);
     expect(controller.actions[0]).toEqual({ type: 'approve_plan', taskId: 'task-1', planId: 'plan-1', version: 2 });
   });
+
+  it('逐项键盘选择四种授权决定且等待期间保留普通草稿', async () => {
+    const controller = new AuthorizationController();
+    const instance = render(<WeaveTui conversation={controller} profile={profile} cwd="C:\\Code\\Weave" version="test" columns={100} rows={30} />);
+    instances.push(instance);
+    enter(instance, '执行受控批次');
+    await waitFor(() => instance.lastFrame()?.includes('授权请求') === true);
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).toContain('FilesystemWrite');
+    expect(frame).toContain('允许一次');
+    expect(frame).toContain('本任务允许');
+    expect(frame).toContain('拒绝');
+    expect(frame).toContain('取消运行');
+    expect(frame).not.toMatch(/全部允许|会话允许|永久允许/);
+
+    instance.stdin.write('local draft');
+    await waitFor(() => instance.lastFrame()?.includes('local draft') === true);
+    instance.stdin.write('\r');
+    expect(controller.actions).toHaveLength(0);
+    for (let index = 0; index < 'local draft'.length; index += 1) instance.stdin.write('\u007f');
+
+    instance.stdin.write('\u001b[B');
+    instance.stdin.write('\u001b[C');
+    instance.stdin.write('\u001b[B');
+    instance.stdin.write('\u001b[C');
+    instance.stdin.write('\u001b[C');
+    instance.stdin.write('\u001b[B');
+    instance.stdin.write('\u001b[C');
+    instance.stdin.write('\u001b[C');
+    instance.stdin.write('\u001b[C');
+    instance.stdin.write('\r');
+    await waitFor(() => controller.actions.length === 1);
+    expect(controller.actions[0]).toMatchObject({
+      type: 'resolve_authorization',
+      decisions: [
+        { actionDigest: 'digest-0', choice: 'allow_once' },
+        { actionDigest: 'digest-1', choice: 'allow_for_task' },
+        { actionDigest: 'digest-2', choice: 'deny' },
+        { actionDigest: 'digest-3', choice: 'cancel' },
+      ],
+    });
+  });
 });
+
+class AuthorizationController implements ConversationController {
+  activeTurnId: string | undefined;
+  readonly actions: TaskAction[] = [];
+  private readonly resolved = deferred();
+
+  submit(turn: UserTurn): AsyncIterable<TurnEvent> { return this.events(turn.content); }
+  dispatch(action: TaskAction): AsyncIterable<TurnEvent> {
+    this.actions.push(action);
+    this.resolved.resolve();
+    return this.empty();
+  }
+  cancel(): void { this.resolved.resolve(); }
+
+  private async *events(userText: string): AsyncGenerator<TurnEvent> {
+    const turnId = 'authorization-turn';
+    this.activeTurnId = turnId;
+    yield { type: 'turn_start', turnId, userText, startedAt: 0, taskMode: 'react' };
+    yield {
+      type: 'authorization_requested', turnId, taskId: 'task-1', runId: 'run-1',
+      authorizationRequestId: 'auth-1', authorizationEpoch: 1,
+      items: Array.from({ length: 4 }, (_, index) => ({
+        callId: `call-${index}`, actionDigest: `digest-${index}`, toolName: 'edit_file',
+        summary: `修改 ${index + 1}`, capabilityTypes: ['FilesystemWrite'], risks: index === 2 ? ['HIGH_RISK'] : [],
+      })),
+    };
+    yield { type: 'task_state', turnId, taskId: 'task-1', state: 'awaiting_authorization', summary: '等待授权' };
+    await this.resolved.promise;
+    this.activeTurnId = undefined;
+    yield { type: 'turn_complete', turnId, status: 'completed', finishReason: 'stop', durationMs: 1 };
+  }
+
+  private async *empty(): AsyncGenerator<TurnEvent> {}
+}
 
 class PlanController implements ConversationController {
   activeTurnId: string | undefined;

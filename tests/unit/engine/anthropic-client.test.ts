@@ -51,7 +51,7 @@ describe('AnthropicMessagesClient', () => {
       messages: request().prompt.messages,
       thinking: { type: 'disabled' },
     }));
-    expect(transport.mock.calls[0]?.[0].system).toHaveLength(2);
+    expect(transport.mock.calls[0]?.[0].system).toHaveLength(1);
     expect(transport.mock.calls[0]?.[0].system[0]).not.toHaveProperty('cache_control');
   });
 
@@ -66,7 +66,7 @@ describe('AnthropicMessagesClient', () => {
     const client = new AnthropicMessagesClient({ ...profile, baseUrl: 'https://api.anthropic.com' }, { transport });
     await collect(client.stream(request()));
     expect(transport.mock.calls[0]?.[0].system[0]).toMatchObject({ cache_control: { type: 'ephemeral' } });
-    expect(transport.mock.calls[0]?.[0].system[1]).not.toHaveProperty('cache_control');
+    expect(transport.mock.calls[0]?.[0].system).toHaveLength(1);
   });
 
   it('在同一消息中保留文本并组装碎片化的多个 tool_use', async () => {

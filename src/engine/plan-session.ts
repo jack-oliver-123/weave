@@ -1,7 +1,7 @@
-import type { Plan, PlanStep } from '../shared/types.js';
+import type { Plan } from '../shared/types.js';
 import type { SubmittedPlanInput } from './control-tools.js';
 import { planFromSubmission } from './control-tools.js';
-import { reconcilePlan, updateStep, validatePlanSubmission } from './plan.js';
+import { reconcilePlan, validatePlanSubmission } from './plan.js';
 
 export type PlanSessionState =
   | 'draft'

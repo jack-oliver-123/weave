@@ -43,8 +43,11 @@ export function WeaveTui(props: WeaveTuiProps): React.JSX.Element {
   const composerWidth = Math.max(1, columns - 6);
   const spinnerTick = state.streamStatus === 'waiting' ? Math.floor(now / 100) : -1;
   const transcriptRows = useMemo(
-    () => formatTranscript(state.transcript, contentWidth, now, state.taskDecision, state.selectedDecision),
-    [contentWidth, state.transcript, state.taskDecision, state.selectedDecision, spinnerTick],
+    () => formatTranscript(
+      state.transcript, contentWidth, now, state.taskDecision, state.selectedDecision,
+      state.pendingAuthorization, state.authorizationChoices, state.selectedAuthorizationItem,
+    ),
+    [contentWidth, state.transcript, state.taskDecision, state.selectedDecision, state.pendingAuthorization, state.authorizationChoices, state.selectedAuthorizationItem, spinnerTick],
   );
   const viewportHeight = calculateLayout(rows, state.composer, columns, state.queuedMessages.length).transcriptHeight;
 
@@ -152,6 +155,28 @@ export function WeaveTui(props: WeaveTuiProps): React.JSX.Element {
     }
   }, [dispatch, props.conversation]);
 
+  const consumeAuthorization = useCallback(async () => {
+    const snapshot = stateRef.current;
+    const request = snapshot.pendingAuthorization;
+    if (request === undefined) return;
+    try {
+      for await (const event of props.conversation.dispatch({
+        type: 'resolve_authorization',
+        taskId: request.taskId,
+        runId: request.runId,
+        authorizationRequestId: request.authorizationRequestId,
+        authorizationEpoch: request.authorizationEpoch,
+        decisions: request.items.map((item, index) => ({
+          actionDigest: item.actionDigest,
+          choice: snapshot.authorizationChoices[index] ?? 'allow_once',
+        })),
+      })) dispatch({ type: 'turn_event', event });
+      dispatch({ type: 'clear_authorization' });
+    } catch (error) {
+      dispatch({ type: 'set_feedback', value: error instanceof Error ? error.message : '授权决定提交失败。' });
+    }
+  }, [dispatch, props.conversation]);
+
   const sendPausedQueue = useCallback(() => {
     const draft = composerRef.current.value;
     if (draft.trim().length > 0) dispatch({ type: 'queue_message', value: draft });
@@ -218,6 +243,33 @@ export function WeaveTui(props: WeaveTuiProps): React.JSX.Element {
       && stateRef.current.queueStatus === 'paused' && stateRef.current.queuedMessages.length > 0) {
       sendPausedQueue();
       return;
+    }
+
+    const authorization = stateRef.current.pendingAuthorization;
+    if (authorization !== undefined) {
+      if (key.upArrow || key.downArrow) {
+        const direction = key.upArrow ? -1 : 1;
+        dispatch({
+          type: 'select_authorization_item',
+          index: (stateRef.current.selectedAuthorizationItem + direction + authorization.items.length) % authorization.items.length,
+        });
+        return;
+      }
+      if (key.leftArrow || key.rightArrow) {
+        const choices = ['allow_once', 'allow_for_task', 'deny', 'cancel'] as const;
+        const current = stateRef.current.authorizationChoices[stateRef.current.selectedAuthorizationItem] ?? 'allow_once';
+        const direction = key.leftArrow ? -1 : 1;
+        dispatch({ type: 'set_authorization_choice', choice: choices[(choices.indexOf(current) + direction + choices.length) % choices.length]! });
+        return;
+      }
+      if (key.return && !key.shift) {
+        if (composerRef.current.value.length > 0) {
+          dispatch({ type: 'set_feedback', value: '授权等待期间的草稿已保留，请先逐项提交授权决定。' });
+          return;
+        }
+        void consumeAuthorization();
+        return;
+      }
     }
 
     const taskDecision = stateRef.current.taskDecision;

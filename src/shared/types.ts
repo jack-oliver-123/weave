@@ -205,13 +205,46 @@ export interface Plan {
   readonly steps: readonly PlanStep[];
 }
 
+export type AuthorizationChoice = 'allow_once' | 'allow_for_task' | 'deny' | 'cancel';
+
+export interface AuthorizationRequestItem {
+  readonly callId: string;
+  readonly actionDigest: string;
+  readonly toolName: string;
+  readonly summary: string;
+  readonly capabilityTypes: readonly string[];
+  readonly risks: readonly string[];
+  readonly destination?: string;
+}
+
+export interface AuthorizationRequestView {
+  readonly taskId: string;
+  readonly runId: string;
+  readonly authorizationRequestId: string;
+  readonly authorizationEpoch: number;
+  readonly items: readonly AuthorizationRequestItem[];
+}
+
+export interface AuthorizationDecisionItem {
+  readonly actionDigest: string;
+  readonly choice: AuthorizationChoice;
+}
+
 export type TaskAction =
   | { readonly type: 'approve_plan'; readonly taskId: string; readonly planId: string; readonly version: number }
   | { readonly type: 'refine_plan'; readonly taskId: string; readonly content?: string }
   | { readonly type: 'exit_task'; readonly taskId: string }
   | { readonly type: 'answer_question'; readonly taskId: string; readonly questionId: string; readonly content: string }
   | { readonly type: 'continue_task'; readonly taskId: string; readonly content?: string }
-  | { readonly type: 'resume_task'; readonly taskId: string };
+  | { readonly type: 'resume_task'; readonly taskId: string }
+  | {
+      readonly type: 'resolve_authorization';
+      readonly taskId: string;
+      readonly runId: string;
+      readonly authorizationRequestId: string;
+      readonly authorizationEpoch: number;
+      readonly decisions: readonly AuthorizationDecisionItem[];
+    };
 
 export interface TokenUsage {
   readonly inputTokens?: number;
@@ -253,6 +286,27 @@ export type LlmStreamEvent =
 export interface LlmClient {
   readonly profile: ProfileSummary;
   stream(request: LlmRequest): AsyncIterable<LlmStreamEvent>;
+}
+
+export interface ModelExchangeInput {
+  readonly destination: {
+    readonly profile: string;
+    readonly protocol: LlmProtocol;
+    readonly model: string;
+    readonly origin: string;
+  };
+  readonly runtime: RuntimeStateContext;
+  readonly environment?: EnvironmentContext;
+  readonly tools: readonly ToolDefinition[];
+  readonly messages: readonly ChatMessage[];
+  readonly maxTokens: number;
+}
+
+export interface ModelExchangeResponse {
+  readonly text: string;
+  readonly calls: readonly ToolCallRequest[];
+  readonly completion: Extract<LlmStreamEvent, { type: 'stream_complete' }>;
+  readonly audit: PromptCompletionAudit;
 }
 
 export interface ConversationStore {
@@ -304,7 +358,7 @@ export type TurnEvent =
       readonly type: 'turn_error';
       readonly turnId: string;
       readonly error: SafeError;
-      readonly restoreInput: string;
+      readonly restoreInput?: string;
       readonly promptAudits?: readonly PromptCompletionAudit[];
       readonly durationMs: number;
     }
@@ -355,12 +409,14 @@ export type TurnEvent =
       readonly type: 'task_state';
       readonly turnId: string;
       readonly taskId: string;
-      readonly state: 'awaiting_input' | 'awaiting_approval' | 'stopped' | 'cancelled' | 'exited';
+      readonly state: 'awaiting_input' | 'awaiting_approval' | 'awaiting_authorization' | 'stopped' | 'cancelled' | 'security_integrity_failure' | 'exited';
       readonly summary: string;
+      readonly effectsMayHaveOccurred?: boolean;
       readonly questionId?: string;
       readonly runCount?: number;
       readonly totalIterations?: number;
     }
+  | ({ readonly type: 'authorization_requested'; readonly turnId: string } & AuthorizationRequestView)
   | {
       readonly type: 'plan_revision';
       readonly turnId: string;
@@ -375,7 +431,8 @@ export type AgentStopReason =
   | 'cancelled'
   | 'abnormal'
   | 'awaiting_input'
-  | 'plan_revision';
+  | 'plan_revision'
+  | 'security_integrity_failure';
 
 export interface RunProgressSummary {
   readonly completedWork: readonly string[];
@@ -390,6 +447,7 @@ export interface RunOutcome {
   readonly result?: string;
   readonly verificationSummary?: string;
   readonly summary: string;
+  readonly effectsMayHaveOccurred?: boolean;
   readonly progress: RunProgressSummary;
   readonly plan?: Plan;
   readonly question?: { readonly questionId: string; readonly prompt: string };
@@ -436,6 +494,7 @@ export type AgentEvent =
     })
   | (AgentEventBase & { readonly type: 'user_input_requested'; readonly questionId: string; readonly prompt: string })
   | (AgentEventBase & { readonly type: 'plan_revision_requested'; readonly reason: string; readonly suggestion: string })
+  | (AgentEventBase & { readonly type: 'authorization_requested'; readonly request: AuthorizationRequestView })
   | (AgentEventBase & { readonly type: 'run_stopped'; readonly outcome: RunOutcome });
 
 export type ToolDefinitionScope = 'all' | 'read_only' | 'none';
@@ -477,14 +536,3 @@ export interface MemoryWriteRequest {
   readonly value: unknown;
   readonly type: 'session' | 'persistent';
 }
-
-export interface PermissionRequest {
-  readonly action: string;
-  readonly resource: string;
-  readonly context?: Readonly<Record<string, unknown>>;
-}
-
-export type Decision =
-  | { readonly verdict: 'allow' }
-  | { readonly verdict: 'deny'; readonly reason: string }
-  | { readonly verdict: 'ask'; readonly reason: string };

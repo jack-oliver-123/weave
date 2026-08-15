@@ -1,11 +1,13 @@
 import OpenAI from 'openai';
 import { randomUUID } from 'node:crypto';
 import type { ResolvedProfile } from '../../config/index.js';
+import type { ProviderCredentialBroker } from '../../security/index.js';
 import type { FinishReason, LlmClient, LlmRequest, LlmStreamEvent, TokenUsage } from '../../shared/types.js';
-import { isRecord, mapClientError, ProtocolError, providerEventError, readNumber, readRecord, readString } from './errors.js';
+import { mapClientError, ProtocolError, providerEventError, readNumber, readRecord, readString } from './errors.js';
 import { deepSeekResponsesReasoningExtension, type DisabledReasoning } from './request-extensions.js';
 import { StreamCancelledError, StreamGuard } from './stream-guard.js';
 import { appendToolArguments, encodeResponsesRequest, parseToolArguments } from './tool-codecs.js';
+import { guardEncodedProviderRequest } from './final-input-guard.js';
 
 interface OpenAIResponsesTransportRequest {
   readonly model: string;
@@ -22,6 +24,7 @@ export interface OpenAIResponsesClientOptions {
   readonly timeoutMs?: number;
   readonly transport?: OpenAIResponsesTransport;
   readonly createCallId?: () => string;
+  readonly credentialBroker?: ProviderCredentialBroker;
 }
 
 export class OpenAIResponsesClient implements LlmClient {
@@ -30,11 +33,13 @@ export class OpenAIResponsesClient implements LlmClient {
   private readonly transport: OpenAIResponsesTransport;
   private readonly reasoningExtension: { readonly reasoning?: DisabledReasoning };
   private readonly createCallId: () => string;
+  private readonly resolvedProfile: ResolvedProfile;
 
   constructor(profile: ResolvedProfile, options: OpenAIResponsesClientOptions = {}) {
     this.profile = { name: profile.name, protocol: profile.protocol, model: profile.model };
+    this.resolvedProfile = profile;
     this.timeoutMs = options.timeoutMs ?? 120_000;
-    this.transport = options.transport ?? createSdkTransport(profile);
+    this.transport = options.transport ?? createSdkTransport(profile, options.credentialBroker);
     this.reasoningExtension = deepSeekResponsesReasoningExtension(profile.baseUrl);
     this.createCallId = options.createCallId ?? randomUUID;
   }
@@ -47,7 +52,7 @@ export class OpenAIResponsesClient implements LlmClient {
     const providerCallIds = new Set<string>();
     try {
       const encoded = encodeResponsesRequest(request.prompt);
-      const source = await guard.wait(this.transport({
+      const transportRequest = {
         model: this.profile.model,
         messages: encoded.messages,
         maxTokens: request.maxTokens,
@@ -55,7 +60,9 @@ export class OpenAIResponsesClient implements LlmClient {
         ...(encoded.tools === undefined ? {} : { tools: encoded.tools, toolChoice: encoded.toolChoice }),
         ...(encoded.instructions === undefined ? {} : { instructions: encoded.instructions }),
         signal: guard.signal,
-      }));
+      };
+      guardEncodedProviderRequest(this.resolvedProfile, { ...transportRequest, signal: undefined });
+      const source = await guard.wait(this.transport(transportRequest));
       for await (const event of guard.iterate(source)) {
         const type = readString(event, 'type');
         if (type === 'response.created') {
@@ -172,8 +179,15 @@ export class OpenAIResponsesClient implements LlmClient {
   }
 }
 
-function createSdkTransport(profile: ResolvedProfile): OpenAIResponsesTransport {
-  const client = new OpenAI({ apiKey: profile.apiKey, baseURL: profile.baseUrl, maxRetries: 0 });
+function createSdkTransport(profile: ResolvedProfile, broker?: ProviderCredentialBroker): OpenAIResponsesTransport {
+  const client = new OpenAI({
+    apiKey: profile.apiKey ?? 'credential-managed', baseURL: profile.baseUrl, maxRetries: 0,
+    ...(broker === undefined || profile.credentialRef === undefined ? {} : {
+      fetch: ((input: string | URL | Request, init?: RequestInit) => broker.fetch(
+        profile.credentialRef!, new URL(profile.baseUrl).origin, 'bearer', input, init,
+      )) as typeof fetch,
+    }),
+  });
   return ({ model, messages, maxTokens, reasoning, tools, toolChoice, instructions, signal }) => client.responses.create({
     model,
     input: messages as OpenAI.Responses.ResponseInput,

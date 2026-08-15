@@ -22,7 +22,7 @@ profiles:
     protocol: anthropic-messages
     model: claude-test
     base_url: https://api.anthropic.com
-    api_key: plain-secret-value
+    credential: provider:claude-test
     thinking: false
 ${overrides}`;
 }
@@ -45,6 +45,46 @@ describe('loadConfig', () => {
     expect(loaded.path).toBe(join(home, '.weave', 'config.yaml'));
     expect(loaded.selected.name).toBe('claude');
     expect(loaded.selected.maxTokens).toBe(4096);
+    expect(loaded.auditRetention).toEqual({ days: 30, maxBytes: 100 * 1024 * 1024 });
+  });
+
+  it('loads bounded security audit retention settings', async () => {
+    const path = await writeConfig(validConfig(`security:
+  audit:
+    retention_days: 365
+    max_mib: 1024
+`));
+    await expect(loadConfig({ configPath: path })).resolves.toMatchObject({
+      auditRetention: { days: 365, maxBytes: 1024 ** 3 },
+    });
+  });
+
+  it('loads an explicit Windows Sandbox backend without permitting fallback', async () => {
+    const path = await writeConfig(validConfig(`security:
+  sandbox:
+    backend: windows-sandbox
+`));
+    await expect(loadConfig({ configPath: path })).resolves.toMatchObject({ sandboxBackend: 'windows-sandbox' });
+  });
+
+  it('rejects an unknown sandbox backend', async () => {
+    const path = await writeConfig(validConfig(`security:
+  sandbox:
+    backend: host-process
+`));
+    await expect(loadConfig({ configPath: path })).rejects.toMatchObject({ field: 'security.sandbox.backend' });
+  });
+
+  it.each([
+    ['retention_days', 0, 'security.audit.retention_days'],
+    ['retention_days', 366, 'security.audit.retention_days'],
+    ['max_mib', 1025, 'security.audit.max_mib'],
+  ])('rejects out-of-range audit %s=%s', async (name, value, field) => {
+    const path = await writeConfig(validConfig(`security:
+  audit:
+    ${name}: ${value}
+`));
+    await expect(loadConfig({ configPath: path })).rejects.toMatchObject({ field });
   });
 
   it('lets the command line select another unique profile', async () => {
@@ -53,7 +93,7 @@ describe('loadConfig', () => {
     protocol: openai-responses
     model: gpt-test
     base_url: https://api.openai.com/v1
-    api_key: openai-secret
+    credential: provider:openai-test
     thinking: false
     max_tokens: 8192
 `);
@@ -67,19 +107,24 @@ describe('loadConfig', () => {
     });
   });
 
-  it('resolves a complete environment variable reference', async () => {
-    const path = await writeConfig(validConfig().replace('plain-secret-value', '${TEST_LLM_KEY}'));
+  it('preserves a complete environment variable reference for use-time migration', async () => {
+    const path = await writeConfig(
+      validConfig().replace('credential: provider:claude-test', 'api_key: ${TEST_LLM_KEY}'),
+    );
 
     const loaded = await loadConfig({
       configPath: path,
       environment: { TEST_LLM_KEY: 'resolved-secret' },
     });
 
-    expect(loaded.selected.apiKey).toBe('resolved-secret');
+    expect(loaded.selected.apiKey).toBeUndefined();
+    expect(loaded.selected.credentialRef).toBe('env:TEST_LLM_KEY');
+    expect(loaded.warnings).toHaveLength(1);
+    expect(JSON.stringify(loaded.warnings)).not.toContain('resolved-secret');
   });
 
   it.each([
-    ['duplicate name', `${validConfig()}\n  - name: claude\n    protocol: openai-responses\n    model: gpt\n    base_url: https://api.openai.com/v1\n    api_key: secret\n    thinking: false\n`, 'profiles[1].name'],
+    ['duplicate name', `${validConfig()}\n  - name: claude\n    protocol: openai-responses\n    model: gpt\n    base_url: https://api.openai.com/v1\n    credential: provider:gpt\n    thinking: false\n`, 'profiles[1].name'],
     ['unknown default', validConfig().replace('default_profile: claude', 'default_profile: missing'), 'default_profile'],
     ['unknown protocol', validConfig().replace('anthropic-messages', 'custom-protocol'), 'profiles[0].protocol'],
     ['full endpoint URL', validConfig().replace('https://api.anthropic.com', 'https://api.anthropic.com/v1/messages'), 'profiles[0].base_url'],
@@ -113,7 +158,7 @@ describe('loadConfig', () => {
   it('does not leak plaintext keys in diagnostics', async () => {
     const secret = 'never-print-this-secret';
     const path = await writeConfig(
-      validConfig().replace('plain-secret-value', secret).replace('thinking: false', 'thinking: true'),
+      validConfig().replace('credential: provider:claude-test', `api_key: ${secret}`),
     );
 
     let thrown: unknown;
@@ -124,6 +169,7 @@ describe('loadConfig', () => {
     }
 
     expect(thrown).toBeInstanceOf(ConfigError);
+    expect(thrown).toMatchObject({ field: 'profiles[0].api_key' });
     expect(String(thrown)).not.toContain(secret);
   });
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AgentLoop } from '../../../src/engine/agent-loop.js';
 import type { AgentEvent, LlmStreamEvent, Plan, ToolCallRequest, ToolCallResult, ToolDefinition, ToolExecutor } from '../../../src/shared/types.js';
-import { FakeLlmClient, fakeProfile } from '../../fixtures/fake-llm-client.js';
+import { FakeLlmClient, fakeProfile, openFakeActionTask } from '../../fixtures/fake-llm-client.js';
 
 const schema = { type: 'object', additionalProperties: false } as const;
 const read: ToolDefinition = { name: 'read_file', purpose: '读取', useWhen: ['读取'], avoidWhen: ['修改'], inputSchema: schema, resultSchema: schema, worksWith: [], executionMode: 'read_shared' };
@@ -41,7 +41,8 @@ describe('AgentLoop runtime', () => {
         return { results: [{ callId: 'c1', providerCallId: 'p1', toolName: 'read_file', isError: false, content: { summary: 'ok' } }], totalCalls: previous + 1, businessToolLimitReached: false };
       },
     };
-    const iterator = new AgentLoop(client, tools, 100).run({ taskId: 't1', runId: 'r1', kind: 'react', task: '任务', messages: [], signal: new AbortController().signal });
+    const actionTask = await openFakeActionTask(client, { taskId: 't1', toolExecutor: tools });
+    const iterator = new AgentLoop(actionTask).run({ taskId: 't1', runId: 'r1', kind: 'react', task: '任务', signal: new AbortController().signal });
     expect((await iterator.next()).value?.type).toBe('run_started');
     expect((await iterator.next()).value?.type).toBe('iteration_started');
     expect((await iterator.next()).value?.type).toBe('tool_call_queued');
@@ -57,8 +58,8 @@ describe('AgentLoop runtime', () => {
     const events = await run(client, executor([]));
     expect(client.requests).toHaveLength(3);
     expect(client.requests[1]?.prompt.messages.at(-1)).toEqual({ role: 'assistant', content: [{ type: 'text', text: '只是文字' }] });
-    expect(client.requests[1]?.prompt.system.reminder?.text).toContain('protocolCorrection');
-    expect(client.requests[1]?.prompt.system.reminder?.text).toContain('普通文本不能结束任务');
+    expect(JSON.stringify(client.requests[1]?.prompt.messages)).toContain('protocolCorrection');
+    expect(JSON.stringify(client.requests[1]?.prompt.messages)).toContain('普通文本不能结束任务');
     expect(events.at(-1)).toMatchObject({ type: 'run_stopped', outcome: { reason: 'abnormal', iterationCount: 3 } });
   });
 
@@ -220,8 +221,9 @@ function executor(definitions: readonly ToolDefinition[] = [read], volatile?: ()
 }
 
 async function run(client: FakeLlmClient, tools: ToolExecutor, overrides: Partial<Parameters<AgentLoop['run']>[0]> = {}): Promise<AgentEvent[]> {
-  const loop = new AgentLoop(client, tools, 100);
+  const actionTask = await openFakeActionTask(client, { toolExecutor: tools });
+  const loop = new AgentLoop(actionTask);
   const events: AgentEvent[] = [];
-  for await (const event of loop.run({ taskId: 'task-1', runId: 'run-1', kind: 'react', task: '任务', messages: [], signal: new AbortController().signal, ...overrides })) events.push(event);
+  for await (const event of loop.run({ taskId: 'task-1', runId: 'run-1', kind: 'react', task: '任务', signal: new AbortController().signal, ...overrides })) events.push(event);
   return events;
 }
