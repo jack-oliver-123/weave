@@ -1,4 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { mkdir, mkdtemp, rm, symlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { ResolvedProfile } from '../../src/config/index.js';
+import { createModelActionGateway } from '../../src/engine/model-action-gateway.js';
+import { OpenAIResponsesClient } from '../../src/engine/llm/openai-responses.js';
 import {
   ActionGatewayImpl,
   ActionTaskClosedError,
@@ -7,6 +13,7 @@ import {
 } from '../../src/security/index.js';
 import type { ModelExchangeResponse, RuntimeStateContext, ToolDefinition } from '../../src/shared/types.js';
 import { createSecurityHarness, FakeTaskParticipant, noToolsTask } from '../fixtures/security-harness.js';
+import { nativeStream } from '../unit/engine/helpers.js';
 
 const runtime: RuntimeStateContext = { type: 'agent_state', mode: 'react', iterationLimit: 10 };
 const controlTool: ToolDefinition = {
@@ -276,7 +283,7 @@ describe('ActionTask model exchange', () => {
       runId: requested.runId,
       authorizationRequestId: requested.authorizationRequestId,
       authorizationEpoch: requested.authorizationEpoch,
-      decisions: requested.items.map((item) => ({ actionDigest: item.actionDigest, choice: 'allow_for_task' })),
+      decisions: requested.items.map((item) => ({ callId: item.callId, actionDigest: item.actionDigest, choice: 'allow_for_task' })),
     });
     await expect(performing).resolves.toMatchObject({ kind: 'business' });
     expect(runner.resources[0]?.executionCalls).toHaveLength(1);
@@ -294,6 +301,117 @@ describe('ActionTask model exchange', () => {
     );
     expect(askedAgain).toBe(false);
     expect(runner.resources[0]?.executionCalls).toHaveLength(2);
+  });
+
+  it('does not reuse allow_once across calls that share an action digest', async () => {
+    const harness = createSecurityHarness();
+    const provider = new FakeModelProvider();
+    provider.resource.calls = [
+      { callId: 'call-1', providerCallId: 'provider-1', name: 'edit_file', input: { path: 'src/a.ts' } },
+      { callId: 'call-2', providerCallId: 'provider-2', name: 'edit_file', input: { path: 'src/a.ts' } },
+    ];
+    const runner = new FakeTaskParticipant('runner', [writeTool]);
+    const gateway = new ActionGatewayImpl({
+      provider, runner, audit: harness.audit, createId: harness.ids.next, now: harness.clock.now,
+    });
+    const task = await gateway.openTask({
+      ...modelTask('task-1'), permissionMode: 'supervised', toolsEnabled: true,
+      pathBoundary: { readRoots: ['.'], writeRoots: ['.'] },
+    });
+    const response = await task.performModelExchange(
+      task.prepareModelExchange({ runId: 'run-1', iteration: 1, runtime, businessTools: [writeTool] }),
+      new AbortController().signal,
+    );
+    let requested!: import('../../src/shared/types.js').AuthorizationRequestView;
+    let publish!: () => void;
+    const published = new Promise<void>((resolve) => { publish = resolve; });
+    const performing = task.performActionBatch(
+      task.prepareActionBatch('run-1', response.proposalBatch!.proposalBatchRef),
+      new AbortController().signal,
+      0,
+      { onAuthorizationRequested: (request) => { requested = request; publish(); } },
+    );
+    await published;
+    expect(requested.items[0]!.actionDigest).toBe(requested.items[1]!.actionDigest);
+    task.resolveAuthorization({
+      taskId: requested.taskId,
+      runId: requested.runId,
+      authorizationRequestId: requested.authorizationRequestId,
+      authorizationEpoch: requested.authorizationEpoch,
+      decisions: [
+        { callId: 'call-1', actionDigest: requested.items[0]!.actionDigest, choice: 'allow_once' },
+        { callId: 'call-2', actionDigest: requested.items[1]!.actionDigest, choice: 'deny' },
+      ],
+    });
+    const outcome = await performing;
+    expect(runner.resources[0]?.executionCalls.flat().map((call) => call.callId)).toEqual(['call-1']);
+    expect(outcome).toMatchObject({
+      kind: 'business',
+      batch: { results: [{ callId: 'call-2', isError: true }] },
+    });
+  });
+
+  it('rechecks the path boundary before honoring an existing task grant', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'weave-grant-boundary-'));
+    const workspace = join(root, 'workspace');
+    const outside = join(root, 'outside');
+    const link = join(workspace, 'link');
+    await Promise.all([mkdir(link, { recursive: true }), mkdir(outside, { recursive: true })]);
+    try {
+      const harness = createSecurityHarness();
+      const provider = new FakeModelProvider();
+      provider.resource.calls = [{
+        callId: 'call-write', providerCallId: 'provider-write', name: 'edit_file', input: { path: 'link/a.ts' },
+      }];
+      const runner = new FakeTaskParticipant('runner', [writeTool]);
+      const gateway = new ActionGatewayImpl({
+        provider, runner, audit: harness.audit, createId: harness.ids.next, now: harness.clock.now,
+      });
+      const task = await gateway.openTask({
+        ...modelTask('task-boundary'), workspaceRoot: workspace, permissionMode: 'supervised', toolsEnabled: true,
+        pathBoundary: { readRoots: ['.'], writeRoots: ['.'] },
+      });
+      const first = await task.performModelExchange(
+        task.prepareModelExchange({ runId: 'run-1', iteration: 1, runtime, businessTools: [writeTool] }),
+        new AbortController().signal,
+      );
+      let requested!: import('../../src/shared/types.js').AuthorizationRequestView;
+      let publish!: () => void;
+      const published = new Promise<void>((resolve) => { publish = resolve; });
+      const performing = task.performActionBatch(
+        task.prepareActionBatch('run-1', first.proposalBatch!.proposalBatchRef),
+        new AbortController().signal,
+        0,
+        { onAuthorizationRequested: (request) => { requested = request; publish(); } },
+      );
+      await published;
+      task.resolveAuthorization({
+        taskId: requested.taskId,
+        runId: requested.runId,
+        authorizationRequestId: requested.authorizationRequestId,
+        authorizationEpoch: requested.authorizationEpoch,
+        decisions: requested.items.map((item) => ({ callId: item.callId, actionDigest: item.actionDigest, choice: 'allow_for_task' })),
+      });
+      await performing;
+      expect(runner.resources[0]?.executionCalls).toHaveLength(1);
+
+      await rm(link, { recursive: true });
+      await symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
+      const repeated = await task.performModelExchange(
+        task.prepareModelExchange({ runId: 'run-1', iteration: 2, runtime, businessTools: [writeTool] }),
+        new AbortController().signal,
+      );
+      const outcome = await task.performActionBatch(
+        task.prepareActionBatch('run-1', repeated.proposalBatch!.proposalBatchRef),
+        new AbortController().signal,
+      );
+      expect(outcome).toMatchObject({
+        kind: 'business', batch: { results: [{ content: { error: { code: 'PATH_OUTSIDE_BOUNDARY' } } }] },
+      });
+      expect(runner.resources[0]?.executionCalls).toHaveLength(1);
+    } finally {
+      await rm(root, { recursive: true });
+    }
   });
 
   it('remembers an explicit denial but does not invoke Runner', async () => {
@@ -324,7 +442,7 @@ describe('ActionTask model exchange', () => {
     await published;
     task.resolveAuthorization({
       ...request,
-      decisions: request.items.map((item) => ({ actionDigest: item.actionDigest, choice: 'deny' })),
+      decisions: request.items.map((item) => ({ callId: item.callId, actionDigest: item.actionDigest, choice: 'deny' })),
     });
     await expect(performing).resolves.toMatchObject({
       kind: 'business', batch: { results: [{ content: { error: { code: 'PERMISSION_DENIED' } } }] },
@@ -412,6 +530,7 @@ describe('ActionTask model exchange', () => {
       task.resolveAuthorization({
         ...request,
         decisions: [{
+          callId: request.items[0]!.callId,
           actionDigest: request.items[0]!.actionDigest,
           choice: requests.length === 1 ? 'allow_once' : 'deny',
         }],
@@ -431,6 +550,51 @@ describe('ActionTask model exchange', () => {
     expect(harness.audit.resources[0]?.auditRecords.flat().map((record) => record.phase)).toEqual([
       'hitl', 'preflight', 'hitl', 'preflight',
     ]);
+  });
+
+  it('carries destination-bound sensitive authorization through the encoded provider boundary', async () => {
+    const harness = createSecurityHarness();
+    const profile: ResolvedProfile = {
+      name: 'fixed-profile', protocol: 'openai-responses', model: 'fixed-model',
+      baseUrl: 'https://provider.example/v1', apiKey: 'test-key', maxTokens: 256,
+    };
+    const transport = vi.fn(async () => nativeStream([
+      { type: 'response.created', response: {} },
+      { type: 'response.output_text.delta', delta: 'safe response' },
+      { type: 'response.completed', response: {} },
+    ]));
+    const client = new OpenAIResponsesClient(profile, { transport });
+    const gateway = createModelActionGateway(client, { createId: harness.ids.next, now: harness.clock.now });
+    const task = await gateway.openTask({
+      ...modelTask('task-provider-boundary'),
+      permissionMode: 'supervised',
+      modelDestination: {
+        profile: profile.name, protocol: profile.protocol, model: profile.model,
+        origin: profile.baseUrl, credentialRef: 'credential:test',
+      },
+    });
+    const requests: import('../../src/shared/types.js').AuthorizationRequestView[] = [];
+    await task.appendResults([{
+      callId: 'call-sensitive', providerCallId: 'provider-sensitive', toolName: 'read_file', isError: false,
+      content: { summary: 'WEAVE_SENSITIVE:authorized-result' },
+    }], 'run-1', { onAuthorizationRequested: (request) => {
+      requests.push(request);
+      task.resolveAuthorization({
+        ...request,
+        decisions: [{
+          callId: request.items[0]!.callId,
+          actionDigest: request.items[0]!.actionDigest,
+          choice: requests.length === 1 ? 'allow_once' : 'deny',
+        }],
+      });
+    } });
+
+    await expect(task.performModelExchange(
+      task.prepareModelExchange({ runId: 'run-1', iteration: 1, runtime, tools: [] }),
+      new AbortController().signal,
+    )).resolves.toMatchObject({ text: 'safe response' });
+    expect(transport).toHaveBeenCalledOnce();
+    expect(JSON.stringify(transport.mock.calls[0]?.[0])).toContain('authorized-result');
   });
 
   it('blocks credential-bearing model output before it can enter later exchanges', async () => {

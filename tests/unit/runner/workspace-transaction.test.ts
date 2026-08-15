@@ -33,6 +33,26 @@ describe('TaskWorkspaceView', () => {
       await view.close();
     }
   });
+
+  it('forks a private action view and limits structured change extraction to candidate paths', async () => {
+    const fixture = await setup();
+    const taskView = await TaskWorkspaceView.create(fixture.workspace, fixture.root);
+    const actionView = await taskView.fork(fixture.root, ['alpha.txt']);
+    try {
+      await expect(readFile(join(actionView.root, 'beta.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      await writeFile(join(actionView.root, 'alpha.txt'), 'after', 'utf8');
+      await writeFile(join(actionView.root, 'beta.txt'), 'unlisted', 'utf8');
+
+      const changes = await actionView.extractChangeSet('action-1', ['alpha.txt']);
+
+      expect(changes.changes.map((change) => change.path)).toEqual(['alpha.txt']);
+      expect(await readFile(join(taskView.root, 'alpha.txt'), 'utf8')).toBe('before');
+      expect(await readFile(join(taskView.root, 'beta.txt'), 'utf8')).toBe('base');
+    } finally {
+      await actionView.close();
+      await taskView.close();
+    }
+  });
 });
 
 describe('WorkspaceCommitBroker', () => {
@@ -99,6 +119,26 @@ describe('WorkspaceCommitBroker', () => {
     const broker = await createBroker(fixture, changeSet);
     await writeFile(join(fixture.workspace, 'alpha.txt'), 'external', 'utf8');
     await expect(broker.commit(changeSet)).rejects.toThrow('FILE_CHANGED_DURING_EDIT');
+    expect(await readFile(join(fixture.workspace, 'beta.txt'), 'utf8')).toBe('base');
+  });
+
+  it('rejects a change set that deletes the complete workspace', async () => {
+    const fixture = await setup();
+    const view = await TaskWorkspaceView.create(fixture.workspace, fixture.root);
+    let changeSet: WorkspaceChangeSet;
+    try {
+      await Promise.all([
+        rm(join(view.root, 'alpha.txt')),
+        rm(join(view.root, 'beta.txt')),
+        writeFile(join(view.root, 'replacement.txt'), 'replacement', 'utf8'),
+      ]);
+      changeSet = await view.extractChangeSet('delete-root');
+    } finally {
+      await view.close();
+    }
+    const broker = await createBroker(fixture, changeSet);
+    await expect(broker.commit(changeSet)).rejects.toThrow('WORKSPACE_ROOT_DELETE');
+    expect(await readFile(join(fixture.workspace, 'alpha.txt'), 'utf8')).toBe('before');
     expect(await readFile(join(fixture.workspace, 'beta.txt'), 'utf8')).toBe('base');
   });
 });

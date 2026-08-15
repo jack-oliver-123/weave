@@ -69,7 +69,7 @@ describe('authorization suspension', () => {
     expect(() => manager.dispatch({
       type: 'resolve_authorization', taskId: authorization.taskId, runId: 'stale-run',
       authorizationRequestId: authorization.authorizationRequestId, authorizationEpoch: authorization.authorizationEpoch,
-      decisions: authorization.items.map((item) => ({ actionDigest: item.actionDigest, choice: 'allow_once' })),
+      decisions: authorization.items.map((item) => ({ callId: item.callId, actionDigest: item.actionDigest, choice: 'allow_once' })),
     })).toThrow(expect.objectContaining({ code: 'STALE_AUTHORIZATION_REQUEST' }));
     expect(() => manager.dispatch({
       type: 'resolve_authorization', taskId: authorization.taskId, runId: authorization.runId,
@@ -84,7 +84,7 @@ describe('authorization suspension', () => {
       runId: authorization.runId,
       authorizationRequestId: authorization.authorizationRequestId,
       authorizationEpoch: authorization.authorizationEpoch,
-      decisions: authorization.items.map((item) => ({ actionDigest: item.actionDigest, choice: 'allow_once' })),
+      decisions: authorization.items.map((item) => ({ callId: item.callId, actionDigest: item.actionDigest, choice: 'allow_once' })),
     }));
     const remaining = await collectIterator(iterator);
     const all = [...beforeAuthorization, waitingState.value!, ...remaining];
@@ -114,7 +114,7 @@ describe('authorization suspension', () => {
     await collect(manager.dispatch({
       type: 'resolve_authorization', taskId: request.taskId, runId: request.runId,
       authorizationRequestId: request.authorizationRequestId, authorizationEpoch: request.authorizationEpoch,
-      decisions: request.items.map((item) => ({ actionDigest: item.actionDigest, choice: 'deny' })),
+      decisions: request.items.map((item) => ({ callId: item.callId, actionDigest: item.actionDigest, choice: 'deny' })),
     }));
     events.push(...await collectIterator(iterator));
     expect(execute).not.toHaveBeenCalled();
@@ -166,7 +166,7 @@ describe('authorization suspension', () => {
     await collect(manager.dispatch({
       type: 'resolve_authorization', taskId: request.taskId, runId: request.runId,
       authorizationRequestId: request.authorizationRequestId, authorizationEpoch: request.authorizationEpoch,
-      decisions: request.items.map((item) => ({ actionDigest: item.actionDigest, choice: 'cancel' })),
+      decisions: request.items.map((item) => ({ callId: item.callId, actionDigest: item.actionDigest, choice: 'cancel' })),
     }));
     events.push(...await collectIterator(iterator));
     expect(execute).not.toHaveBeenCalled();

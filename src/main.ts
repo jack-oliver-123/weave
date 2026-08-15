@@ -24,6 +24,7 @@ import {
   EnvironmentMigrationCredentialStore,
   createPlatformCredentialStore,
   ProviderCredentialBroker,
+  loadHostSecurityPolicy,
 } from './security/index.js';
 
 const require = createRequire(import.meta.url);
@@ -51,6 +52,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     toolsEnabled: cli.toolsEnabled,
   });
   const workspaceConfig = await resolveWorkspace(cli.workspacePath, cwd());
+  const securityPolicy = await loadHostSecurityPolicy(workspaceConfig.root);
   const credentialBroker = new ProviderCredentialBroker(
     new EnvironmentMigrationCredentialStore(createPlatformCredentialStore()),
   );
@@ -77,6 +79,9 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     workspaceRoot: workspaceConfig.root,
     audit,
     actionGateway,
+    policySnapshotId: securityPolicy.version,
+    permissionRules: [...securityPolicy.userRules, ...securityPolicy.projectRules],
+    permissionMode: config.permissionMode,
     availableTools: runnerRuntime === undefined ? [] : memoryToolDefinitions(runnerRuntime.definitions),
     securityInternalRoots: defaultSecurityInternalRoots(),
   });

@@ -1,6 +1,7 @@
 import type { ChatMessage } from '../shared/types.js';
 import type { DataClassification, ProvenanceEnvelope } from './domain.js';
 import { deepFreeze, SECURITY_SCHEMA_VERSION } from './domain.js';
+import { classifyText } from './data-guards.js';
 import type { SecurityDigests } from './digests.js';
 
 export type DataDestination = 'model' | 'terminal' | 'history' | 'file' | 'network' | 'audit';
@@ -78,6 +79,16 @@ export class SecureContextLedger {
     return deepFreeze(messages);
   }
 
+  authorizedSensitiveValuesFor(destination: DataDestination): readonly string[] {
+    this.assertActive();
+    const values = new Set<string>();
+    for (const entry of this.entries) {
+      if (entry.envelope.classification !== 'sensitive' || !entry.destinations.includes(destination)) continue;
+      collectSensitiveStrings(entry.message.content, values);
+    }
+    return deepFreeze([...values]);
+  }
+
   omissionsFor(destination: DataDestination): readonly { readonly entryId: string; readonly classification: DataClassification; readonly purpose: string }[] {
     this.assertActive();
     return deepFreeze(this.entries
@@ -92,6 +103,20 @@ export class SecureContextLedger {
 
   private assertActive(): void {
     if (this.destroyed) throw new SecureContextDestroyedError();
+  }
+}
+
+function collectSensitiveStrings(value: unknown, values: Set<string>): void {
+  if (typeof value === 'string') {
+    if (classifyText(value) === 'sensitive') values.add(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectSensitiveStrings(item, values);
+    return;
+  }
+  if (value !== null && typeof value === 'object') {
+    for (const item of Object.values(value)) collectSensitiveStrings(item, values);
   }
 }
 

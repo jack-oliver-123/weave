@@ -126,7 +126,7 @@ describe('durable audit barriers', () => {
       taskId: requested.taskId, runId: requested.runId,
       authorizationRequestId: requested.authorizationRequestId,
       authorizationEpoch: requested.authorizationEpoch,
-      decisions: requested.items.map((item) => ({ actionDigest: item.actionDigest, choice: 'allow_once' })),
+      decisions: requested.items.map((item) => ({ callId: item.callId, actionDigest: item.actionDigest, choice: 'allow_once' })),
     });
     await expect(executing).rejects.toMatchObject({ code: 'HITL_AUDIT_FAILED' });
     expect(setup.runner.execute).not.toHaveBeenCalled();

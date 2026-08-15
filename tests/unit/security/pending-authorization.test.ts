@@ -16,26 +16,26 @@ describe('PendingAuthorization', () => {
     pending.resolve({
       taskId: 'task-1', runId: 'run-1', authorizationRequestId: 'auth-1', authorizationEpoch: 3,
       decisions: [
-        { actionDigest: 'digest-1', choice: 'allow_once' },
-        { actionDigest: 'digest-2', choice: 'deny' },
+        { callId: 'call-1', actionDigest: 'digest-1', choice: 'allow_once' },
+        { callId: 'call-2', actionDigest: 'digest-2', choice: 'deny' },
       ],
     });
     await expect(waiting).resolves.toEqual([
-      { actionDigest: 'digest-1', choice: 'allow_once' },
-      { actionDigest: 'digest-2', choice: 'deny' },
+      { callId: 'call-1', actionDigest: 'digest-1', choice: 'allow_once' },
+      { callId: 'call-2', actionDigest: 'digest-2', choice: 'deny' },
     ]);
   });
 
   it.each([
-    ['missing', [{ actionDigest: 'digest-1', choice: 'allow_once' }]],
+    ['missing', [{ callId: 'call-1', actionDigest: 'digest-1', choice: 'allow_once' }]],
     ['extra', [
-      { actionDigest: 'digest-1', choice: 'allow_once' },
-      { actionDigest: 'digest-2', choice: 'deny' },
-      { actionDigest: 'digest-3', choice: 'deny' },
+      { callId: 'call-1', actionDigest: 'digest-1', choice: 'allow_once' },
+      { callId: 'call-2', actionDigest: 'digest-2', choice: 'deny' },
+      { callId: 'call-3', actionDigest: 'digest-3', choice: 'deny' },
     ]],
     ['duplicate', [
-      { actionDigest: 'digest-1', choice: 'allow_once' },
-      { actionDigest: 'digest-1', choice: 'deny' },
+      { callId: 'call-1', actionDigest: 'digest-1', choice: 'allow_once' },
+      { callId: 'call-1', actionDigest: 'digest-1', choice: 'deny' },
     ]],
   ] as const)('keeps waiting after %s decisions', async (_name, decisions) => {
     const pending = new PendingAuthorization(request);
@@ -47,8 +47,8 @@ describe('PendingAuthorization', () => {
     pending.resolve({
       taskId: 'task-1', runId: 'run-1', authorizationRequestId: 'auth-1', authorizationEpoch: 3,
       decisions: [
-        { actionDigest: 'digest-1', choice: 'allow_for_task' },
-        { actionDigest: 'digest-2', choice: 'cancel' },
+        { callId: 'call-1', actionDigest: 'digest-1', choice: 'allow_for_task' },
+        { callId: 'call-2', actionDigest: 'digest-2', choice: 'cancel' },
       ],
     });
     await expect(waiting).resolves.toHaveLength(2);
@@ -59,14 +59,54 @@ describe('PendingAuthorization', () => {
     const waiting = pending.wait(new AbortController().signal);
     expect(() => pending.resolve({
       taskId: 'task-1', runId: 'other-run', authorizationRequestId: 'auth-1', authorizationEpoch: 3,
-      decisions: request.items.map((item) => ({ actionDigest: item.actionDigest, choice: 'deny' as const })),
+      decisions: request.items.map((item) => ({ callId: item.callId, actionDigest: item.actionDigest, choice: 'deny' as const })),
     })).toThrow('STALE_AUTHORIZATION_REQUEST');
     const valid = {
       taskId: 'task-1', runId: 'run-1', authorizationRequestId: 'auth-1', authorizationEpoch: 3,
-      decisions: request.items.map((item) => ({ actionDigest: item.actionDigest, choice: 'deny' as const })),
+      decisions: request.items.map((item) => ({ callId: item.callId, actionDigest: item.actionDigest, choice: 'deny' as const })),
     };
     pending.resolve(valid);
     await waiting;
     expect(() => pending.resolve(valid)).toThrow('STALE_AUTHORIZATION_REQUEST');
+  });
+
+  it('rejects an unknown runtime choice without settling the request', async () => {
+    const pending = new PendingAuthorization(request);
+    expect(() => pending.resolve({
+      taskId: 'task-1', runId: 'run-1', authorizationRequestId: 'auth-1', authorizationEpoch: 3,
+      decisions: [
+        { callId: 'call-1', actionDigest: 'digest-1', choice: 'approve_forever' as never },
+        { callId: 'call-2', actionDigest: 'digest-2', choice: 'deny' },
+      ],
+    })).toThrow('AUTHORIZATION_DECISION_INVALID');
+    pending.resolve({
+      taskId: 'task-1', runId: 'run-1', authorizationRequestId: 'auth-1', authorizationEpoch: 3,
+      decisions: request.items.map((item) => ({ callId: item.callId, actionDigest: item.actionDigest, choice: 'deny' as const })),
+    });
+    await expect(pending.wait(new AbortController().signal)).resolves.toHaveLength(2);
+  });
+
+  it('binds allow_once to callId when multiple calls share an action digest', async () => {
+    const duplicateDigestRequest = {
+      ...request,
+      items: [
+        { ...request.items[0], callId: 'call-1', actionDigest: 'same-digest' },
+        { ...request.items[1], callId: 'call-2', actionDigest: 'same-digest' },
+      ],
+    } as const;
+    const pending = new PendingAuthorization(duplicateDigestRequest);
+    const waiting = pending.wait(new AbortController().signal);
+    expect(() => pending.resolve({
+      taskId: 'task-1', runId: 'run-1', authorizationRequestId: 'auth-1', authorizationEpoch: 3,
+      decisions: [{ callId: 'call-1', actionDigest: 'same-digest', choice: 'allow_once' }],
+    })).toThrow('AUTHORIZATION_DECISIONS_INCOMPLETE');
+    pending.resolve({
+      taskId: 'task-1', runId: 'run-1', authorizationRequestId: 'auth-1', authorizationEpoch: 3,
+      decisions: [
+        { callId: 'call-1', actionDigest: 'same-digest', choice: 'allow_once' },
+        { callId: 'call-2', actionDigest: 'same-digest', choice: 'deny' },
+      ],
+    });
+    await expect(waiting).resolves.toHaveLength(2);
   });
 });

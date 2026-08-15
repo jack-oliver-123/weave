@@ -61,7 +61,7 @@ export class OpenAIResponsesClient implements LlmClient {
         ...(encoded.instructions === undefined ? {} : { instructions: encoded.instructions }),
         signal: guard.signal,
       };
-      guardEncodedProviderRequest(this.resolvedProfile, { ...transportRequest, signal: undefined });
+      guardEncodedProviderRequest(this.resolvedProfile, { ...transportRequest, signal: undefined }, request);
       const source = await guard.wait(this.transport(transportRequest));
       for await (const event of guard.iterate(source)) {
         const type = readString(event, 'type');

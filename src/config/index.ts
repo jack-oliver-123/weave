@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { parse } from 'yaml';
 import type { LlmProtocol, ProfileSummary } from '../shared/types.js';
 import type { AuditRetentionPolicy } from '../security/audit.js';
+import type { PermissionMode } from '../security/domain.js';
 
 const PROTOCOLS = new Set<LlmProtocol>([
   'anthropic-messages',
@@ -24,7 +25,7 @@ const PROFILE_KEYS = new Set([
 ]);
 const ROOT_KEYS = new Set(['default_profile', 'profiles', 'tools', 'security']);
 const TOOL_KEYS = new Set(['enabled']);
-const SECURITY_KEYS = new Set(['audit', 'sandbox']);
+const SECURITY_KEYS = new Set(['audit', 'sandbox', 'permission_mode']);
 const AUDIT_KEYS = new Set(['retention_days', 'max_mib']);
 const SANDBOX_KEYS = new Set(['backend']);
 const ENV_REFERENCE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
@@ -48,6 +49,7 @@ export interface LoadedConfig {
   readonly profiles: readonly ResolvedProfile[];
   readonly selected: ResolvedProfile;
   readonly toolsEnabled: boolean;
+  readonly permissionMode: PermissionMode;
   readonly auditRetention: AuditRetentionPolicy;
   readonly sandboxBackend?: 'wsl2' | 'windows-sandbox';
   readonly warnings: readonly string[];
@@ -101,6 +103,7 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Loade
   const rootToolsEnabled = parseTools(root.tools, 'tools', path);
   const auditRetention = parseAuditRetention(root.security, path);
   const sandboxBackend = parseSandboxBackend(root.security, path);
+  const permissionMode = parsePermissionMode(root.security, path);
   const defaultProfile = requireString(root.default_profile, 'default_profile', path);
   if (!Array.isArray(root.profiles) || root.profiles.length === 0) {
     throw new ConfigError('profiles 必须是非空列表', 'profiles', path);
@@ -127,10 +130,24 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Loade
     ? ['${ENV} credential migration is deprecated; use `weave credential set` and a profile credential reference.']
     : [];
   return {
-    path, defaultProfile, profiles, selected, toolsEnabled, auditRetention,
+    path, defaultProfile, profiles, selected, toolsEnabled, permissionMode, auditRetention,
     ...(sandboxBackend === undefined ? {} : { sandboxBackend }),
     warnings: Object.freeze(warnings),
   };
+}
+
+function parsePermissionMode(value: unknown, path: string): PermissionMode {
+  if (value === undefined) return 'supervised';
+  const security = requireRecord(value, 'security', 'security', path);
+  const mode = security.permission_mode ?? 'supervised';
+  if (mode !== 'read_only' && mode !== 'supervised' && mode !== 'autonomous') {
+    throw new ConfigError(
+      'security.permission_mode 必须是 read_only、supervised 或 autonomous',
+      'security.permission_mode',
+      path,
+    );
+  }
+  return mode;
 }
 
 function parseSandboxBackend(value: unknown, path: string): LoadedConfig['sandboxBackend'] {
@@ -248,8 +265,8 @@ function validateBaseUrl(value: string, field: string, path: string): string {
   } catch {
     throw new ConfigError('base_url 必须是有效 URL', field, path);
   }
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
-    throw new ConfigError('base_url 只支持 http 或 https', field, path);
+  if (parsed.protocol !== 'https:') {
+    throw new ConfigError('base_url 只支持 https', field, path);
   }
   if (FULL_ENDPOINT_PATH.test(parsed.pathname)) {
     throw new ConfigError('base_url 必须是 API 根地址，不能包含完整接口路径', field, path);

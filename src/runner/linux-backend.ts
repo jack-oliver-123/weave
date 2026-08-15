@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { minimatch } from 'minimatch';
 import type { ToolCallResult, ToolDefinition } from '../shared/types.js';
 import { buildCapabilityReport, REQUIRED_SANDBOX_PROBES, type CapabilityReport, type ProbeEvidence } from './capability-report.js';
@@ -37,6 +37,7 @@ export interface NamespaceTransport {
   readonly osDescription: string;
   toSandboxPath(hostPath: string): Promise<string>;
   run(workspacePath: string, mode: string, args: readonly string[], signal?: AbortSignal): Promise<NamespaceExecution>;
+  verifyProcessTreeCleanup?(workspacePath: string): Promise<boolean>;
 }
 
 export class LinuxNamespaceBackend implements SandboxBackend {
@@ -52,6 +53,11 @@ export class LinuxNamespaceBackend implements SandboxBackend {
     const workspacePath = await transport.toSandboxPath(options.workspaceRoot);
     const probe = await transport.run(workspacePath, 'probe', []);
     const statuses = parseProbeOutput(probe.stdout.toString('utf8'));
+    if (transport.verifyProcessTreeCleanup !== undefined) {
+      let cleanupPassed = false;
+      try { cleanupPassed = await transport.verifyProcessTreeCleanup(workspacePath); } catch { cleanupPassed = false; }
+      statuses.set('process_tree_cleanup', cleanupPassed ? 'passed' : 'failed');
+    }
     const evidence: ProbeEvidence[] = REQUIRED_SANDBOX_PROBES.map((probeId) => ({
       probeId,
       status: statuses.get(probeId) === 'passed' ? 'passed' : 'failed',
@@ -354,7 +360,7 @@ export class HostNamespaceTransport implements NamespaceTransport {
     const platform = requested ?? (process.platform === 'win32' ? 'wsl2' : 'linux');
     const executable = platform === 'wsl2' ? 'wsl.exe' : 'unshare';
     const version = platform === 'wsl2'
-      ? await runProcess('wsl.exe', ['--', 'uname', '-r'])
+      ? await runProcess('wsl.exe', ['--exec', 'uname', '-r'])
       : await runProcess('uname', ['-r']);
     const description = version.stdout.toString('utf8').trim();
     if (platform === 'wsl2' && !/microsoft-standard-WSL2/i.test(description)) throw new Error('WSL1_UNSUPPORTED');
@@ -370,10 +376,58 @@ export class HostNamespaceTransport implements NamespaceTransport {
 
   run(workspacePath: string, mode: string, args: readonly string[], signal?: AbortSignal): Promise<NamespaceExecution> {
     const encoded = [workspacePath, mode, ...args].map((value) => Buffer.from(value, 'utf8').toString('base64'));
-    const unshare = ['--user', '--map-root-user', '--mount', '--pid', '--fork', '--net', 'bash', '-s', '--', ...encoded];
-    return this.platform === 'wsl2'
-      ? runProcess(this.executable, ['--', 'unshare', ...unshare], NAMESPACE_SCRIPT, signal)
-      : runProcess(this.executable, unshare, NAMESPACE_SCRIPT, signal);
+    const unshare = ['--user', '--map-root-user', '--mount', '--pid', '--fork', '--net', '/usr/bin/bash', '-s', '--', ...encoded];
+    if (this.platform !== 'wsl2') return runProcess(this.executable, unshare, NAMESPACE_SCRIPT, signal);
+    const token = `weave-namespace-${randomUUID()}`;
+    return runProcess(
+      this.executable,
+      [
+        '--exec', '/usr/bin/bash', '--noprofile', '--norc', '-c',
+        'exec -a "$1" /usr/bin/unshare "${@:2}"', '_', token, ...unshare,
+      ],
+      NAMESPACE_SCRIPT,
+      signal,
+      async () => {
+        await runProcess('wsl.exe', ['--exec', 'pkill', '-KILL', '-f', '--', token]);
+      },
+    );
+  }
+
+  async verifyProcessTreeCleanup(workspacePath: string): Promise<boolean> {
+    const token = `weave-cleanup-${randomUUID()}`;
+    const controller = new AbortController();
+    const execution = this.run(workspacePath, 'cleanup_probe', [token], controller.signal);
+    let processIds: readonly number[] = [];
+    try {
+      processIds = await waitForProcessIds(() => this.findProcessIds(token), 5_000);
+    } finally {
+      controller.abort(new Error('PROCESS_TREE_CLEANUP_PROBE_CLOSE'));
+      await execution.catch(() => undefined);
+    }
+    if (processIds.length === 0) return false;
+    const absent = await waitForProcessesGone(processIds, (pid) => this.processExists(pid), 5_000);
+    if (!absent) await Promise.allSettled(processIds.map((pid) => this.killProcess(pid)));
+    return absent;
+  }
+
+  private async findProcessIds(token: string): Promise<readonly number[]> {
+    const execution = this.platform === 'wsl2'
+      ? await runProcess('wsl.exe', ['--exec', 'pgrep', '-f', '--', token])
+      : await runProcess('pgrep', ['-f', '--', token]);
+    if (execution.exitCode !== 0) return [];
+    return execution.stdout.toString('utf8').trim().split(/\s+/).map(Number).filter((pid) => Number.isInteger(pid) && pid > 1);
+  }
+
+  private async processExists(pid: number): Promise<boolean> {
+    const execution = this.platform === 'wsl2'
+      ? await runProcess('wsl.exe', ['--exec', 'kill', '-0', String(pid)])
+      : await runProcess('kill', ['-0', String(pid)]);
+    return execution.exitCode === 0;
+  }
+
+  private async killProcess(pid: number): Promise<void> {
+    if (this.platform === 'wsl2') await runProcess('wsl.exe', ['--exec', 'kill', '-KILL', String(pid)]);
+    else await runProcess('kill', ['-KILL', String(pid)]);
   }
 }
 
@@ -404,6 +458,14 @@ safe_base() {
   target=$(realpath -e "/workspace/$value" 2>/tmp/path-error) || { echo 'PATH_NOT_FOUND' >&2; exit 42; }
   case "$target" in /workspace|/workspace/*) printf '%s' "$target";; *) echo 'PATH_OUTSIDE_BOUNDARY' >&2; exit 41;; esac
 }
+if [ "$mode" = cleanup_probe ]; then
+  token=$(decode "$1")
+  case "$token" in weave-cleanup-[A-Za-z0-9-]*) ;; *) exit 46;; esac
+  : > /tmp/probe-null
+  /usr/bin/bash -c 'exec -a "$1" /usr/bin/sleep 300' _ "$token" </tmp/probe-null >/tmp/probe-null 2>&1 &
+  wait
+  exit 47
+fi
 if [ "$mode" = probe ]; then
   probe() { printf '%s=%s\n' "$1" "$2"; }
   : > /tmp/probe-null
@@ -415,7 +477,7 @@ if [ "$mode" = probe ]; then
   if [ ! -e /etc/sudoers ]; then probe privilege_escalation_blocked passed; else probe privilege_escalation_blocked failed; fi
   limit=$(ulimit -u 2>/tmp/probe-null || printf unlimited)
   case "$limit" in *[!0-9]*|'') probe resource_limits failed;; *) if [ "$limit" -le 128 ]; then probe resource_limits passed; else probe resource_limits failed; fi;; esac
-  (sleep 0.01 </tmp/probe-null >/tmp/probe-null 2>&1 &) ; wait || true; probe process_tree_cleanup passed
+  probe process_tree_cleanup pending
   if [ ! -e /run/weave-control ]; then probe control_ipc_hidden passed; else probe control_ipc_hidden failed; fi
   if [ ! -e /run/weave-broker ]; then probe brokers_hidden passed; else probe brokers_hidden failed; fi
   if [ ! -e /mnt/c ]; then probe wsl_windows_mount_hidden passed; else probe wsl_windows_mount_hidden failed; fi
@@ -585,15 +647,29 @@ export function linuxReadToolDefinitions(): readonly ToolDefinition[] {
   ]);
 }
 
-async function runProcess(executable: string, args: readonly string[], stdin?: string, signal?: AbortSignal): Promise<NamespaceExecution> {
+async function runProcess(
+  executable: string,
+  args: readonly string[],
+  stdin?: string,
+  signal?: AbortSignal,
+  terminate?: () => Promise<void>,
+): Promise<NamespaceExecution> {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, [...args], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let stdoutBytes = 0;
     let stderrBytes = 0;
-    const abort = () => child.kill('SIGKILL');
+    const abort = () => {
+      if (terminate === undefined) { child.kill('SIGKILL'); return; }
+      const deadline = new Promise<void>((resolveTimeout) => {
+        const timer = setTimeout(resolveTimeout, 2_000);
+        timer.unref();
+      });
+      void Promise.race([terminate().catch(() => undefined), deadline]).finally(() => child.kill('SIGKILL'));
+    };
     signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
     child.stdout.on('data', (chunk: Buffer) => {
       stdoutBytes += chunk.length;
       if (stdoutBytes <= MAX_SCAN_BYTES) stdout.push(chunk);
@@ -617,6 +693,30 @@ function parseProbeOutput(output: string): Map<string, string> {
     const index = line.indexOf('=');
     return index < 0 ? [line, 'invalid'] : [line.slice(0, index), line.slice(index + 1)];
   }));
+}
+
+async function waitForProcessIds(probe: () => Promise<readonly number[]>, timeoutMs: number): Promise<readonly number[]> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const processIds = await probe();
+    if (processIds.length > 0) return processIds;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return [];
+}
+
+async function waitForProcessesGone(
+  processIds: readonly number[],
+  exists: (pid: number) => Promise<boolean>,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const present = await Promise.all(processIds.map(exists));
+    if (present.every((value) => !value)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return false;
 }
 
 function evidenceDigest(probeId: string, status: string): string {

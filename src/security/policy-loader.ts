@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
-import { readFile, realpath, stat } from 'node:fs/promises';
-import { posix, win32 } from 'node:path';
+import { execFile } from 'node:child_process';
+import { lstat, readFile, realpath, stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join, posix, resolve, win32 } from 'node:path';
+import { promisify } from 'node:util';
 import { parse } from 'yaml';
 import type { PermissionRule, PermissionRuleTarget } from './authorization.js';
 import type { CapabilityPrimitive } from './domain.js';
@@ -95,6 +98,65 @@ export class SecurityPolicyLoader {
     if (expectedUid === undefined || metadata.uid !== expectedUid) throw new Error('SECURITY_POLICY_OWNER_UNTRUSTED');
     if (metadata.mode === undefined || (metadata.mode & 0o022) !== 0) throw new Error('SECURITY_POLICY_PERMISSIONS_UNTRUSTED');
   }
+}
+
+export async function loadHostSecurityPolicy(workspaceRoot: string): Promise<SecurityPolicySnapshot> {
+  const userPolicyPath = join(homedir(), '.weave', 'security.yaml');
+  const projectPolicyPath = resolve(workspaceRoot, '.weave-policy.yaml');
+  const [hasUserPolicy, hasProjectPolicy] = await Promise.all([
+    regularPathExists(userPolicyPath),
+    regularPathExists(projectPolicyPath),
+  ]);
+  const loader = new SecurityPolicyLoader({
+    workspaceRoot,
+    ...(process.platform === 'win32'
+      ? { platform: 'win32' as const, verifyWindowsAcl: verifyCurrentUserWindowsAcl }
+      : { platform: 'posix' as const }),
+  });
+  return loader.load({
+    ...(hasUserPolicy ? { userPolicyPath } : {}),
+    ...(hasProjectPolicy ? { projectPolicyPath } : {}),
+  });
+}
+
+async function regularPathExists(path: string): Promise<boolean> {
+  try {
+    const metadata = await lstat(path);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error('SECURITY_POLICY_NOT_REGULAR_FILE');
+    return true;
+  } catch (error) {
+    if (recordWithCode(error).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+async function verifyCurrentUserWindowsAcl(path: string): Promise<boolean> {
+  const script = [
+    '$ErrorActionPreference = "Stop"',
+    '$acl = Get-Acl -LiteralPath $args[0]',
+    '$current = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value',
+    '$owner = (New-Object Security.Principal.NTAccount($acl.Owner)).Translate([Security.Principal.SecurityIdentifier]).Value',
+    'if ($owner -ne $current) { exit 2 }',
+    '$trusted = @($current, "S-1-5-18", "S-1-5-32-544")',
+    '$write = [Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::Modify -bor [Security.AccessControl.FileSystemRights]::FullControl -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership',
+    'foreach ($rule in $acl.Access) {',
+    '  $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value',
+    '  if ($rule.AccessControlType -eq "Allow" -and $trusted -notcontains $sid -and ($rule.FileSystemRights -band $write)) { exit 2 }',
+    '}',
+    'exit 0',
+  ].join('; ');
+  try {
+    await promisify(execFile)('powershell.exe', [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script, path,
+    ], { windowsHide: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function recordWithCode(value: unknown): { readonly code?: unknown } {
+  return typeof value === 'object' && value !== null ? value : {};
 }
 
 export function parsePolicy(contents: string, source: 'user' | 'project'): PermissionRule[] {

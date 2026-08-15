@@ -12,6 +12,7 @@ import {
   ActionGatewayImpl,
   FinalInputGuard,
   type ActionGateway,
+  type ModelExchangeAuthorization,
   type ModelProviderTaskResource,
   type OpenActionTaskInput,
   type TaskLifecycleParticipant,
@@ -19,6 +20,7 @@ import {
   type SecurityAuditRecord,
   type SecurityAuditParticipant,
 } from '../security/index.js';
+import { bindAuthorizedSensitiveInput } from './llm/final-input-guard.js';
 import { assemblePrompt, buildPromptCompletionAudit } from './prompt-assembly.js';
 
 export interface ModelActionGatewayOptions {
@@ -38,7 +40,7 @@ export function createModelActionGateway(
     runner: options.runner ?? new NoToolsActionRunner(),
     audit: options.audit ?? noOp,
     createId: options.createId ?? randomUUID,
-    now: options.now ?? (() => performance.now()),
+    now: options.now ?? Date.now,
   });
 }
 
@@ -69,7 +71,11 @@ class LlmModelResource implements ModelProviderTaskResource {
 
   constructor(private readonly client: LlmClient, private readonly taskId: string, private readonly fixedDestination: ModelExchangeInput['destination']) {}
 
-  async exchange(input: ModelExchangeInput, signal: AbortSignal): Promise<ModelExchangeResponse> {
+  async exchange(
+    input: ModelExchangeInput,
+    signal: AbortSignal,
+    authorization?: ModelExchangeAuthorization,
+  ): Promise<ModelExchangeResponse> {
     if (this.closed) throw new Error(`MODEL_EXCHANGE_CLOSED: ${this.taskId}`);
     if (
       input.destination.profile !== this.client.profile.name
@@ -78,6 +84,13 @@ class LlmModelResource implements ModelProviderTaskResource {
     ) {
       throw new Error('MODEL_DESTINATION_MISMATCH: 模型交换目标发生变化');
     }
+    if (
+      authorization !== undefined
+      && (authorization.taskId !== this.taskId || !sameModelDestination(authorization.destination, input.destination))
+    ) {
+      throw new Error('MODEL_DISCLOSURE_AUTHORIZATION_INVALID: Sensitive disclosure proof does not match this exchange');
+    }
+    const authorizedSensitiveValues = authorization?.sensitiveValues ?? [];
     const prompt = assemblePrompt({
       runtime: input.runtime,
       ...(input.environment === undefined ? {} : { environment: input.environment }),
@@ -89,12 +102,13 @@ class LlmModelResource implements ModelProviderTaskResource {
       actualDestination: input.destination,
       headers: {},
       body: new TextEncoder().encode(JSON.stringify({ system: prompt.system, tools: prompt.tools, messages: prompt.messages })),
-      authorizedSensitiveValues: [],
+      authorizedSensitiveValues,
     });
     let text = '';
     let calls: ModelExchangeResponse['calls'] = [];
     let completion: Extract<LlmStreamEvent, { type: 'stream_complete' }> | undefined;
-    for await (const event of this.client.stream({ prompt, maxTokens: input.maxTokens, signal })) {
+    const request = bindAuthorizedSensitiveInput({ prompt, maxTokens: input.maxTokens, signal }, authorizedSensitiveValues);
+    for await (const event of this.client.stream(request)) {
       if (event.type === 'text_delta') text += event.delta;
       else if (event.type === 'tool_calls') {
         if (calls.length > 0) throw new Error('模型重复提交工具调用集合。');
@@ -117,6 +131,20 @@ class LlmModelResource implements ModelProviderTaskResource {
   async close(): Promise<void> {
     this.closed = true;
   }
+}
+
+function sameModelDestination(
+  left: ModelExchangeInput['destination'],
+  right: ModelExchangeInput['destination'],
+): boolean {
+  return left.profile === right.profile
+    && left.protocol === right.protocol
+    && left.model === right.model
+    && normalizeOrigin(left.origin) === normalizeOrigin(right.origin);
+}
+
+function normalizeOrigin(value: string): string {
+  try { return new URL(value).origin; } catch { return ''; }
 }
 
 class NoOpTaskParticipant implements TaskLifecycleParticipant {

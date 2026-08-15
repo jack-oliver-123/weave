@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  WEAVE_CERTIFICATION_KEY_ID: weave-certification-v1
+
 jobs:
   certify-linux:
     runs-on: ubuntu-latest
@@ -28,6 +31,8 @@ jobs:
         run: npx vitest run tests/certification/wsl2-read-tools.test.ts
       - name: Write bound evidence
         if: always()
+        env:
+          WEAVE_CERTIFICATION_SIGNING_KEY: ${{ secrets.WEAVE_CERTIFICATION_SIGNING_KEY }}
         run: node scripts/write-certification-evidence.mjs linux "${{ steps.certification.outcome }}" FilesystemRead,FilesystemWrite,ProcessSpawn process_identity,host_paths_hidden,raw_network_blocked,environment_cleared,devices_hidden,privilege_escalation_blocked,resource_limits,process_tree_cleanup,control_ipc_hidden,brokers_hidden
       - name: Upload evidence
         if: always()

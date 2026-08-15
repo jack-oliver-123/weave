@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ToolCallResult } from '../shared/types.js';
 import type {
@@ -25,8 +25,33 @@ export interface WindowsJobObjectWorkerOptions {
   readonly vm: WindowsSandboxTaskVm;
   readonly cowHostRoot: string;
   readonly guestWorkspaceRoot?: string;
+  readonly bridgeGuestPath?: string;
   readonly input: ActionWorkerLaunchInput;
   readonly createId?: () => string;
+}
+
+const DEFAULT_BRIDGE_GUEST_PATH = 'C:\\Weave\\Cow\\.weave\\windows-runtime\\bridge.dll';
+
+export async function provisionWindowsWorkerRuntime(
+  vm: WindowsSandboxTaskVm,
+  cowHostRoot: string,
+  cowGuestRoot = 'C:\\Weave\\Cow',
+): Promise<string> {
+  const runtimeHostRoot = join(cowHostRoot, '.weave', 'windows-runtime');
+  await Promise.all([
+    mkdir(runtimeHostRoot, { recursive: true }),
+    mkdir(join(cowHostRoot, '.weave', 'action-views'), { recursive: true }),
+  ]);
+  await writeFile(join(runtimeHostRoot, 'bridge.cs'), WINDOWS_JOB_SUPERVISOR_SOURCE, { encoding: 'utf8', flag: 'wx' });
+  const runtimeGuestRoot = `${cowGuestRoot}\\.weave\\windows-runtime`;
+  const bridgeGuestPath = `${runtimeGuestRoot}\\bridge.dll`;
+  const command = [
+    'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command',
+    `"$ErrorActionPreference='Stop'; Add-Type -Path '${runtimeGuestRoot}\\bridge.cs' -OutputAssembly '${bridgeGuestPath}' -OutputType Library;`,
+    `& icacls.exe '${cowGuestRoot}' /setintegritylevel '(OI)(CI)L' /T /C /Q | Out-Null"`,
+  ].join(' ');
+  await vm.exec(command, 'ExistingLogin', cowGuestRoot, new AbortController().signal);
+  return bridgeGuestPath;
 }
 
 export class WindowsJobObjectWorker implements ActionWorkerBackend {
@@ -67,6 +92,7 @@ export class WindowsJobObjectWorker implements ActionWorkerBackend {
       `-PolicyPath "${this.guestDirectory}\\policy.json"`,
       `-WorkerPath "${this.guestDirectory}\\worker.ps1"`,
       `-ResultPath "${this.guestDirectory}\\result.json"`,
+      `-BridgePath "${this.options.bridgeGuestPath ?? DEFAULT_BRIDGE_GUEST_PATH}"`,
     ].join(' ');
     try {
       await this.options.vm.exec(command, 'ExistingLogin', this.guestWorkspaceRoot, signal);
@@ -74,8 +100,11 @@ export class WindowsJobObjectWorker implements ActionWorkerBackend {
       if (signal.aborted) return { result: failure(this.options.input, 'TOOL_CANCELLED', 'Action was cancelled') };
       throw error;
     }
-    const encoded = await readFile(join(this.actionDirectory, 'result.json'));
-    if (encoded.byteLength > this.options.input.profile.batchOutputBytes) {
+    const encoded = await readBoundedRegularFile(
+      join(this.actionDirectory, 'result.json'),
+      this.options.input.profile.batchOutputBytes,
+    );
+    if (encoded === undefined) {
       return { result: failure(this.options.input, 'OUTPUT_LIMIT_EXCEEDED', 'Worker result exceeded the action output budget') };
     }
     return { result: parseWorkerResult(encoded.toString('utf8'), this.options.input) };
@@ -85,6 +114,29 @@ export class WindowsJobObjectWorker implements ActionWorkerBackend {
     if (this.closed) return;
     this.closed = true;
     await rm(this.actionDirectory, { recursive: true, force: true });
+  }
+}
+
+async function readBoundedRegularFile(path: string, limit: number): Promise<Buffer | undefined> {
+  if (!Number.isInteger(limit) || limit < 1) throw new Error('WINDOWS_WORKER_PROTOCOL_ERROR');
+  const pathMetadata = await lstat(path);
+  if (!pathMetadata.isFile() || pathMetadata.isSymbolicLink()) throw new Error('WINDOWS_WORKER_PROTOCOL_ERROR');
+  if (pathMetadata.size > limit) return undefined;
+  const handle = await open(path, 'r');
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile()) throw new Error('WINDOWS_WORKER_PROTOCOL_ERROR');
+    if (metadata.size > limit) return undefined;
+    const output = Buffer.alloc(limit + 1);
+    let offset = 0;
+    while (offset < output.length) {
+      const { bytesRead } = await handle.read(output, offset, output.length - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    return offset > limit ? undefined : output.subarray(0, offset);
+  } finally {
+    await handle.close();
   }
 }
 
@@ -399,15 +451,7 @@ try {
 }
 `;
 
-export const WINDOWS_JOB_SUPERVISOR_SCRIPT = String.raw`param(
-  [Parameter(Mandatory=$true)][string]$RequestPath,
-  [Parameter(Mandatory=$true)][string]$PolicyPath,
-  [Parameter(Mandatory=$true)][string]$WorkerPath,
-  [Parameter(Mandatory=$true)][string]$ResultPath
-)
-$ErrorActionPreference = 'Stop'
-$source = @'
-using System;
+export const WINDOWS_JOB_SUPERVISOR_SOURCE = String.raw`using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
@@ -542,7 +586,16 @@ public static class WeaveWindowsJob {
     }
   }
 }
-'@
+`;
+
+export const WINDOWS_JOB_SUPERVISOR_SCRIPT = String.raw`param(
+  [Parameter(Mandatory=$true)][string]$RequestPath,
+  [Parameter(Mandatory=$true)][string]$PolicyPath,
+  [Parameter(Mandatory=$true)][string]$WorkerPath,
+  [Parameter(Mandatory=$true)][string]$ResultPath,
+  [Parameter(Mandatory=$true)][string]$BridgePath
+)
+$ErrorActionPreference = 'Stop'
 
 try {
   $policy = Get-Content -LiteralPath $PolicyPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -552,8 +605,7 @@ try {
   New-Item -ItemType Directory -Path (Join-Path $workspaceRoot '.weave\temp') -Force | Out-Null
   New-Item -ItemType Directory -Path (Join-Path $workspaceRoot '.weave\profile\AppData\Local') -Force | Out-Null
   New-Item -ItemType Directory -Path (Join-Path $workspaceRoot '.weave\profile\AppData\Roaming') -Force | Out-Null
-  & icacls.exe $workspaceRoot /setintegritylevel '(OI)(CI)L' /T /C /Q | Out-Null
-  Add-Type -TypeDefinition $source -Language CSharp
+  Add-Type -Path $BridgePath
   $workerExitCode = [WeaveWindowsJob]::Run(
     $WorkerPath,
     $RequestPath,

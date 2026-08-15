@@ -51,6 +51,11 @@ describe('对话端口集成', () => {
       maxTokens: 99,
       modelOrigin: 'https://provider.example/v1',
       actionGateway: { openTask },
+      policySnapshotId: 'policy-42',
+      permissionRules: [{
+        schemaVersion: 1, id: 'deny-shell', source: 'project', effect: 'deny',
+        target: { capability: 'ProcessSpawn' },
+      }],
       createTaskId: () => 'task-1',
       createRunId: ids('run'),
       createQuestionId: () => 'question-1',
@@ -66,6 +71,8 @@ describe('对话端口集成', () => {
     expect(openTask.mock.calls[0]?.[0]).toMatchObject({
       taskId: 'task-1',
       toolsEnabled: false,
+      policySnapshotId: 'policy-42',
+      permissionRules: [expect.objectContaining({ id: 'deny-shell', effect: 'deny' })],
       modelDestination: {
         profile: 'fake', protocol: 'openai-responses', model: 'fake-model', origin: 'https://provider.example',
       },
@@ -85,6 +92,19 @@ describe('对话端口集成', () => {
     expect(events[0]).toMatchObject({ type: 'turn_error', error: { code: 'CREDENTIAL_DATA_BLOCKED' } });
     expect(events[0]).not.toHaveProperty('restoreInput');
     expect(JSON.stringify(events)).not.toContain(credential);
+    expect(client.requests).toHaveLength(0);
+    expect(store.getMessages()).toEqual([]);
+  });
+
+  it('does not write sensitive user input to public history without history authorization', async () => {
+    const sensitive = 'WEAVE_SENSITIVE:private-user-input';
+    const client = new FakeLlmClient(profile, []);
+    const store = new InMemoryConversationStore();
+    const manager = new ConversationManager(client, store, { maxTokens: 99 });
+
+    const events = await collect(manager.submit({ mode: 'react', content: sensitive }));
+
+    expect(events.at(-1)).toMatchObject({ type: 'turn_error' });
     expect(client.requests).toHaveLength(0);
     expect(store.getMessages()).toEqual([]);
   });

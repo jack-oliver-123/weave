@@ -77,7 +77,7 @@ export class AnthropicMessagesClient implements LlmClient {
         ...(encoded.system === undefined ? {} : { system: encoded.system }),
         signal: guard.signal,
       };
-      guardEncodedProviderRequest(this.resolvedProfile, { ...transportRequest, signal: undefined });
+      guardEncodedProviderRequest(this.resolvedProfile, { ...transportRequest, signal: undefined }, request);
       const source = await guard.wait(this.transport(transportRequest));
       for await (const event of guard.iterate(source)) {
         const type = readString(event, 'type');

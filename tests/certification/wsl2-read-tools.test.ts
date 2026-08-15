@@ -27,7 +27,13 @@ suite('Linux/WSL2 read-tool certification', () => {
     expect(runtime.capabilityReport.capabilities).toEqual(['FilesystemRead', 'FilesystemWrite', 'ProcessSpawn']);
     expect(runtime.capabilityReport.evidence.every((item) => item.status === 'passed')).toBe(true);
 
-    const provider = new CertificationProvider(calls());
+    const proposed = calls();
+    const provider = new CertificationProvider([
+      proposed.slice(0, 6),
+      [proposed[7]!],
+      [proposed[8]!],
+      [proposed[6]!],
+    ]);
     const audit = new CertificationAudit();
     let id = 0;
     const gateway = new ActionGatewayImpl({
@@ -51,7 +57,7 @@ suite('Linux/WSL2 read-tool certification', () => {
             runId: event.request.runId,
             authorizationRequestId: event.request.authorizationRequestId,
             authorizationEpoch: event.request.authorizationEpoch,
-            decisions: event.request.items.map((item) => ({ actionDigest: item.actionDigest, choice: 'allow_once' })),
+            decisions: event.request.items.map((item) => ({ callId: item.callId, actionDigest: item.actionDigest, choice: 'allow_once' })),
           });
         }
       }
@@ -74,8 +80,8 @@ suite('Linux/WSL2 read-tool certification', () => {
       { toolName: 'create_file', isError: false, errorCode: undefined },
       { toolName: 'edit_file', isError: false, errorCode: undefined },
       { toolName: 'bash', isError: false, errorCode: undefined },
-      { toolName: 'bash', isError: true, errorCode: 'COMMAND_FAILED' },
       { toolName: 'bash', isError: true, errorCode: 'TOOL_TIMEOUT' },
+      { toolName: 'bash', isError: true, errorCode: 'COMMAND_FAILED' },
       { toolName: 'bash', isError: true, errorCode: 'COMMAND_FAILED' },
     ]);
     expect(await readFile(join(workspace, 'created', 'new.txt'), 'utf8')).toBe('created by worker\n');
@@ -85,35 +91,37 @@ suite('Linux/WSL2 read-tool certification', () => {
     await expect(readFile(join(workspace, 'timeout.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     const outputLimited = completed.find((event) => event.result.callId === 'bash-output')!;
     expect(outputLimited.result.content.data).toMatchObject({ truncated: true });
-    expect(provider.inputs).toHaveLength(2);
+    expect(provider.inputs).toHaveLength(5);
     const disclosed = JSON.stringify(provider.inputs[1]!.messages);
     expect(disclosed).toContain('const needle');
     expect(disclosed.indexOf('provider-read')).toBeLessThan(disclosed.indexOf('provider-glob'));
     expect(disclosed.indexOf('provider-glob')).toBeLessThan(disclosed.indexOf('provider-grep'));
     expect(disclosed).not.toContain('dependency.ts');
     expect(disclosed).not.toContain('hardlink.ts');
-    expect(audit.records.map((record) => record.phase)).toEqual([
-      'hitl', 'hitl', 'hitl', 'hitl', 'hitl', 'hitl',
-      ...Array(9).fill('preflight'),
-      ...Array(9).fill('supervisor'),
-      ...Array(9).fill('outcome'),
-    ]);
+    const businessCallIds = new Set(completed.map((event) => event.result.callId));
+    const businessAudit = audit.records.filter(
+      (record) => record.callId !== undefined && businessCallIds.has(record.callId),
+    );
+    expect(businessAudit.filter((record) => record.phase === 'hitl')).toHaveLength(6);
+    expect(businessAudit.filter((record) => record.phase === 'preflight')).toHaveLength(9);
+    expect(businessAudit.filter((record) => record.phase === 'supervisor')).toHaveLength(9);
+    expect(businessAudit.filter((record) => record.phase === 'outcome')).toHaveLength(9);
   }, 120_000);
 });
 
 class CertificationProvider {
   readonly resource: CertificationProviderResource;
-  constructor(firstCalls: readonly ToolCallRequest[]) { this.resource = new CertificationProviderResource(firstCalls); }
+  constructor(batches: readonly (readonly ToolCallRequest[])[]) { this.resource = new CertificationProviderResource(batches); }
   get inputs(): readonly ModelExchangeInput[] { return this.resource.inputs; }
   async openTask(): Promise<ModelProviderTaskResource> { return this.resource; }
 }
 
 class CertificationProviderResource implements ModelProviderTaskResource {
   readonly inputs: ModelExchangeInput[] = [];
-  constructor(private readonly firstCalls: readonly ToolCallRequest[]) {}
+  constructor(private readonly batches: readonly (readonly ToolCallRequest[])[]) {}
   async exchange(input: ModelExchangeInput): Promise<ModelExchangeResponse> {
     this.inputs.push(structuredClone(input));
-    const calls = this.inputs.length === 1 ? this.firstCalls : [{
+    const calls = this.batches[this.inputs.length - 1] ?? [{
       callId: 'complete', providerCallId: 'provider-complete', name: 'complete_task',
       input: { result: 'done', verificationSummary: 'certified' },
     }];

@@ -174,10 +174,10 @@ describe('TUI 交互集成', () => {
     expect(controller.actions[0]).toMatchObject({
       type: 'resolve_authorization',
       decisions: [
-        { actionDigest: 'digest-0', choice: 'allow_once' },
-        { actionDigest: 'digest-1', choice: 'allow_for_task' },
-        { actionDigest: 'digest-2', choice: 'deny' },
-        { actionDigest: 'digest-3', choice: 'cancel' },
+        { callId: 'call-0', actionDigest: 'digest-0', choice: 'allow_once' },
+        { callId: 'call-1', actionDigest: 'digest-1', choice: 'allow_for_task' },
+        { callId: 'call-2', actionDigest: 'digest-2', choice: 'deny' },
+        { callId: 'call-3', actionDigest: 'digest-3', choice: 'cancel' },
       ],
     });
   });

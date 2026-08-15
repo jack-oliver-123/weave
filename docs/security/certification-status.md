@@ -4,7 +4,7 @@
 
 | 验证域 | 状态 | 证据摘要 |
 | --- | --- | --- |
-| 普通 CI | `passed` | 类型检查、lint、构建、85 个测试文件、555 项测试、OpenSpec strict validation、文档链接与构建通过；另有 7 项环境认证测试按条件跳过 |
+| 普通 CI | `passed` | 完整测试套件、类型检查、lint、构建、OpenSpec strict validation、文档链接与构建通过；环境认证测试按条件跳过 |
 | Linux namespace backend | `not_run` | 本次主机不是 Linux；由 `certify-linux.yml` 独立运行 |
 | WSL2 namespace backend | `passed` | AgentLoop-to-OS 纵切片通过，认证 `FilesystemRead`、`FilesystemWrite`、`ProcessSpawn`；包含 WSL 挂载、interop、环境、网络、CoW、Bash、超时和输出预算探针 |
 | Windows Credential Manager | `passed` | 临时 Generic Credential 的 set/get/list/delete 平台认证通过，测试凭据已删除 |

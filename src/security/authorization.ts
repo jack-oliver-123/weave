@@ -93,7 +93,8 @@ const RISK_PATTERNS: readonly [RegExp, string][] = [
 export class CommandRiskCheck {
   evaluate(action: NormalizedAction, workspaceRoot?: string): CommandRiskAssessment {
     const serialized = `${action.actionType}\n${JSON.stringify(action.input)}`;
-    if (workspaceRoot !== undefined && destructiveWorkspaceRoot(serialized, workspaceRoot)) {
+    if (destructiveSandboxWorkspaceRoot(action)
+      || (workspaceRoot !== undefined && destructiveWorkspaceRoot(serialized, workspaceRoot))) {
       return riskAssessment('hard_deny', ['WORKSPACE_ROOT_DELETE'], 'WORKSPACE_ROOT_DELETE');
     }
     for (const [pattern, code] of HARD_DENY_PATTERNS) {
@@ -371,13 +372,18 @@ export class PendingAuthorization {
       || input.authorizationRequestId !== this.request.authorizationRequestId
       || input.authorizationEpoch !== this.request.authorizationEpoch
     ) throw new Error('STALE_AUTHORIZATION_REQUEST');
-    const expected = new Set(this.request.items.map((item) => item.actionDigest));
+    const expected = new Map<string, string>();
+    for (const item of this.request.items) {
+      if (expected.has(item.callId)) throw new Error('AUTHORIZATION_REQUEST_INVALID');
+      expected.set(item.callId, item.actionDigest);
+    }
     const received = new Set<string>();
     for (const decision of input.decisions) {
-      if (received.has(decision.actionDigest) || !expected.has(decision.actionDigest)) {
+      if (!isAuthorizationChoice(decision.choice)) throw new Error('AUTHORIZATION_DECISION_INVALID');
+      if (received.has(decision.callId) || expected.get(decision.callId) !== decision.actionDigest) {
         throw new Error('AUTHORIZATION_DECISIONS_INCOMPLETE');
       }
-      received.add(decision.actionDigest);
+      received.add(decision.callId);
     }
     if (received.size !== expected.size) throw new Error('AUTHORIZATION_DECISIONS_INCOMPLETE');
     this.settled = true;
@@ -389,6 +395,10 @@ export class PendingAuthorization {
     this.settled = true;
     this.rejectPromise(reason);
   }
+}
+
+function isAuthorizationChoice(value: unknown): value is AuthorizationDecisionItem['choice'] {
+  return value === 'allow_once' || value === 'allow_for_task' || value === 'deny' || value === 'cancel';
 }
 
 export function mergeEffects(effects: readonly AuthorizationEffect[]): AuthorizationEffect {
@@ -466,6 +476,29 @@ function evaluatedLayersFor(
 function destructiveWorkspaceRoot(serialized: string, workspaceRoot: string): boolean {
   const escaped = workspaceRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`(?:rm|rmdir|remove-item|del)[^\\n]*["']?${escaped}["']?(?:[\\s"'}]|$)`, 'i').test(serialized);
+}
+
+function destructiveSandboxWorkspaceRoot(action: NormalizedAction): boolean {
+  if (action.actionType !== 'bash' || typeof action.input !== 'object' || action.input === null || Array.isArray(action.input)) {
+    return false;
+  }
+  const input = action.input as Readonly<Record<string, import('./domain.js').JsonValue>>;
+  const command = input.command;
+  if (typeof command !== 'string') return false;
+  if (deletesCompleteTarget(command, '/workspace') || deletesCompleteTarget(command, 'C:\\Weave\\Cow')) return true;
+  const cwd = typeof input.cwd === 'string' ? input.cwd.replaceAll('\\', '/') : '.';
+  return (cwd === '.' || cwd === '/workspace' || /^c:\/weave\/cow\/?$/i.test(cwd))
+    && deletesCompleteTarget(command, '.');
+}
+
+function deletesCompleteTarget(command: string, target: string): boolean {
+  const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const suffix = target === '.' ? '' : '(?:[\\\\/])?';
+  const operand = `["']?${escaped}${suffix}["']?(?=\\s|$|[;&|])`;
+  const recursiveRm = new RegExp(`\\brm\\b(?=[^\\r\\n]*(?:-[^\\s]*r|--recursive))(?=[^\\r\\n]*(?:-[^\\s]*f|--force))[^\\r\\n]*?(?:\\s|^)(?:--\\s+)?${operand}`, 'i');
+  const removeItem = new RegExp(`\\bremove-item\\b(?=[^\\r\\n]*-(?:recurse|r))(?=[^\\r\\n]*-(?:force|fo))[^\\r\\n]*?(?:\\s|^)${operand}`, 'i');
+  const recursiveRmdir = new RegExp(`\\brmdir\\b(?=[^\\r\\n]*(?:/s|-[^\\s]*r))[^\\r\\n]*?(?:\\s|^)${operand}`, 'i');
+  return recursiveRm.test(command) || removeItem.test(command) || recursiveRmdir.test(command);
 }
 
 function riskAssessment(

@@ -12,7 +12,7 @@ import type {
   UserTurn,
 } from '../shared/types.js';
 import { sanitizeTerminalText } from '../shared/sanitize-terminal-text.js';
-import { CredentialDataBlockedError, type ActionGateway, type ActionTask } from '../security/index.js';
+import { classifyText, CredentialDataBlockedError, type ActionGateway, type ActionTask } from '../security/index.js';
 import { AgentLoop, type AgentRunInput } from './agent-loop.js';
 import { createModelActionGateway } from './model-action-gateway.js';
 import { AgentTaskSession } from './task-session.js';
@@ -42,6 +42,8 @@ export interface ConversationManagerOptions {
   readonly actionGateway?: ActionGateway;
   readonly createGatewayId?: () => string;
   readonly permissionMode?: import('../security/index.js').PermissionMode;
+  readonly policySnapshotId?: string;
+  readonly permissionRules?: readonly import('../security/index.js').PermissionRule[];
   readonly workspaceRoot?: string;
   readonly audit?: import('../security/index.js').SecurityAuditParticipant;
   readonly securityInternalRoots?: readonly string[];
@@ -182,9 +184,12 @@ export class ConversationManager implements ConversationController {
 
   private async *run(active: ActiveRun, plan?: Plan): AsyncGenerator<TurnEvent> {
     let outcome: import('../shared/types.js').RunOutcome | undefined;
+    const publicHistoryAuthorized = classifyText(active.userText) === 'ordinary';
     try {
       const actionTask = await this.openActionTask(active.task, active.userText);
-      if (active.appendUser) this.store.appendMessages([{ role: 'user', content: active.userText }]);
+      if (active.appendUser && publicHistoryAuthorized) {
+        this.store.appendMessages([{ role: 'user', content: active.userText }]);
+      }
       yield {
         type: 'turn_start', turnId: active.turnId, userText: active.userText, startedAt: active.startedAt,
         taskMode: active.task.mode, taskPhase: active.kind,
@@ -201,7 +206,7 @@ export class ConversationManager implements ConversationController {
       if (outcome === undefined) throw new ConversationTaskError('RUN_OUTCOME_MISSING', 'AgentLoop 未返回终态。');
       active.task.applyOutcome(outcome);
       this.applyPlanOutcome(active.task, active.kind, outcome);
-      this.commitPublicHistory(active, outcome);
+      if (publicHistoryAuthorized) this.commitPublicHistory(active, outcome);
       const durationMs = this.duration(active);
       if (outcome.reason === 'completed' && active.kind === 'plan_draft' && outcome.plan !== undefined) {
         active.task.markAwaitingApproval();
@@ -361,8 +366,9 @@ export class ConversationManager implements ConversationController {
     this.actionTask = await this.gateway.openTask({
       schemaVersion: 1,
       taskId: task.taskId,
-      policySnapshotId: 'compatibility-policy-v1',
+      policySnapshotId: this.options.policySnapshotId ?? 'compatibility-policy-v1',
       permissionMode: this.options.permissionMode ?? (toolsEnabled ? 'autonomous' : 'read_only'),
+      ...(this.options.permissionRules === undefined ? {} : { permissionRules: this.options.permissionRules }),
       modelDestination: {
         profile: this.client.profile.name,
         protocol: this.client.profile.protocol,

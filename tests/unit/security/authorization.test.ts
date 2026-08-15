@@ -33,6 +33,9 @@ const requirement = {
 describe('command risk and five-layer authorization', () => {
   it.each([
     ['workspace root deletion', { command: 'rm -rf /repo' }, '/repo', 'WORKSPACE_ROOT_DELETE'],
+    ['sandbox workspace deletion', { command: 'rm -rf /workspace' }, undefined, 'WORKSPACE_ROOT_DELETE'],
+    ['Windows sandbox workspace deletion', { command: 'Remove-Item -Recurse -Force C:\\Weave\\Cow' }, undefined, 'WORKSPACE_ROOT_DELETE'],
+    ['current working directory deletion', { command: 'rm -rf .', cwd: '.' }, undefined, 'WORKSPACE_ROOT_DELETE'],
     ['host credential resource', { command: 'cat ~/.ssh/id_rsa' }, undefined, 'HOST_SECURITY_RESOURCE'],
     ['device IPC', { command: 'cat /dev/mem' }, undefined, 'HOST_DEVICE_OR_IPC'],
     ['privilege escalation', { command: 'sudo chmod 777 /etc' }, undefined, 'PRIVILEGE_ESCALATION'],
@@ -179,6 +182,26 @@ describe('task authorization state', () => {
     expect(state.currentRevocationVersion).toBe(1);
     expect(() => state.consumeTicket(third.ticketId)).toThrow('TICKET_INVALID_OR_EXPIRED');
     now += 61_000;
+  });
+
+  it('expires one-time grants, task grants, and prepared tickets after their exact TTL boundary', () => {
+    let id = 0; let now = 100;
+    const state = new TaskAuthorizationState('task-1', 1, () => `ttl-id-${++id}`, () => now);
+    state.grantOnce('boundary-call', 'boundary-action', 10);
+    state.grantOnce('expired-call', 'expired-action', 10);
+    state.grantForTask('task-action', 'task-scope', 10);
+    const boundaryTicket = state.issueTicket('run-1', 'boundary-call', 'boundary-action', 10);
+    const expiredTicket = state.issueTicket('run-1', 'expired-call', 'expired-action', 10);
+
+    now = 110;
+    expect(state.hasGrant('boundary-call', 'boundary-action')).toBe(true);
+    expect(state.hasGrant('other-call', 'task-action', 'task-scope')).toBe(true);
+    expect(state.consumeTicket(boundaryTicket.ticketId)).toBe(boundaryTicket);
+
+    now = 111;
+    expect(state.hasGrant('expired-call', 'expired-action')).toBe(false);
+    expect(state.hasGrant('other-call', 'task-action', 'task-scope')).toBe(false);
+    expect(() => state.consumeTicket(expiredTicket.ticketId)).toThrow('TICKET_INVALID_OR_EXPIRED');
   });
 
   it('remembers explicit denial by digest but not cancellation or changed parameters', () => {

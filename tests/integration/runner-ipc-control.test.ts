@@ -3,9 +3,12 @@ import { userInfo } from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildCapabilityReport,
+  BoundedJsonFrameDecoder,
   defaultResourceBudget,
   EphemeralRunnerIdentity,
   openRunnerControlChannel,
+  parseRunnerRpcEnvelope,
+  MAX_RUNNER_IPC_FRAME_BYTES,
   REQUIRED_SANDBOX_PROBES,
   RunnerSupervisor,
   RUNNER_PROTOCOL_VERSION,
@@ -30,6 +33,26 @@ const call: ToolCallRequest = {
 };
 
 describe('Runner IPC control plane', () => {
+  it('decodes fragmented bounded frames and rejects malformed, oversized, or invalid-schema input', () => {
+    const decoder = new BoundedJsonFrameDecoder(64);
+    expect(decoder.push(Buffer.from('{"id":"one"'))).toEqual([]);
+    expect(decoder.push(Buffer.from(',"value":1}\n{"id":"two"}\n'))).toEqual([
+      { id: 'one', value: 1 }, { id: 'two' },
+    ]);
+
+    expect(() => new BoundedJsonFrameDecoder().push(Buffer.from('{bad json}\n')))
+      .toThrow('RUNNER_IPC_FRAME_INVALID_JSON');
+    expect(() => new BoundedJsonFrameDecoder(8).push(Buffer.from('123456789')))
+      .toThrow('RUNNER_IPC_FRAME_TOO_LARGE');
+    expect(() => new BoundedJsonFrameDecoder(8).push(Buffer.from('123456789\n')))
+      .toThrow('RUNNER_IPC_FRAME_TOO_LARGE');
+    expect(() => new BoundedJsonFrameDecoder().push(Buffer.from([0xff, 0x0a])))
+      .toThrow('RUNNER_IPC_FRAME_INVALID_UTF8');
+    expect(() => parseRunnerRpcEnvelope({ id: 'request', method: 'open_task', params: {}, injected: true }))
+      .toThrow('RUNNER_IPC_SCHEMA_INVALID');
+    expect(MAX_RUNNER_IPC_FRAME_BYTES).toBe(1024 * 1024);
+  });
+
   it('routes task control and the durable audit callback through an authenticated local pipe', async () => {
     const owner = userInfo().username;
     const runnerId = 'ipc-runner';

@@ -10,6 +10,7 @@ import { AgentLoop } from '../../src/engine/agent-loop.js';
 import {
   createCertifiedWindowsRunnerRuntime,
   HostWindowsSandboxCli,
+  provisionWindowsWorkerRuntime,
   REQUIRED_SANDBOX_PROBES,
   TaskWorkspaceView,
   WindowsJobObjectWorker,
@@ -104,7 +105,7 @@ suite('Windows Sandbox certification', () => {
             type: 'resolve_authorization', taskId: event.request.taskId, runId: event.request.runId,
             authorizationRequestId: event.request.authorizationRequestId,
             authorizationEpoch: event.request.authorizationEpoch,
-            decisions: event.request.items.map((item) => ({ actionDigest: item.actionDigest, choice: 'allow_once' })),
+            decisions: event.request.items.map((item) => ({ callId: item.callId, actionDigest: item.actionDigest, choice: 'allow_once' })),
           });
         }
       }
@@ -194,15 +195,17 @@ async function executeDirectCall(
     taskId: `${name}-task`, sandboxId: randomUUID(), budget: certificationBudget(20_000),
     baselinePath: workspace, cowPath: view.root,
   });
-  const worker = new WindowsJobObjectWorker({
-    vm, cowHostRoot: view.root,
-    input: directWorkerInput(name, {}, certificationBudget(20_000)),
-    createId: () => `${name.replaceAll('_', '-')}-worker`,
-  });
+  let worker: WindowsJobObjectWorker | undefined;
   try {
+    await provisionWindowsWorkerRuntime(vm, view.root);
+    worker = new WindowsJobObjectWorker({
+      vm, cowHostRoot: view.root,
+      input: directWorkerInput(name, {}, certificationBudget(20_000)),
+      createId: () => `${name.replaceAll('_', '-')}-worker`,
+    });
     return (await worker.execute(new AbortController().signal)).result;
   } finally {
-    await Promise.allSettled([worker.close(), vm.stop(), view.close()]);
+    await Promise.allSettled([worker?.close() ?? Promise.resolve(), vm.stop(), view.close()]);
   }
 }
 
@@ -231,7 +234,7 @@ async function runAgentLoop(
           type: 'resolve_authorization', taskId: event.request.taskId, runId: event.request.runId,
           authorizationRequestId: event.request.authorizationRequestId,
           authorizationEpoch: event.request.authorizationEpoch,
-          decisions: event.request.items.map((item) => ({ actionDigest: item.actionDigest, choice: 'allow_once' })),
+          decisions: event.request.items.map((item) => ({ callId: item.callId, actionDigest: item.actionDigest, choice: 'allow_once' })),
         });
       }
     }
@@ -257,6 +260,7 @@ async function certifyIsolation(
   });
   trace('isolation:vm-started');
   try {
+    await provisionWindowsWorkerRuntime(vm, view.root);
     const canaryDirectory = await mkdtemp(join(tmpdir(), 'weave-host-canary-'));
     cleanup.push(() => rm(canaryDirectory, { recursive: true, force: true }));
     const registryId = `WeaveCertification\\${randomUUID()}`;

@@ -167,6 +167,7 @@ export function WeaveTui(props: WeaveTuiProps): React.JSX.Element {
         authorizationRequestId: request.authorizationRequestId,
         authorizationEpoch: request.authorizationEpoch,
         decisions: request.items.map((item, index) => ({
+          callId: item.callId,
           actionDigest: item.actionDigest,
           choice: snapshot.authorizationChoices[index] ?? 'allow_once',
         })),

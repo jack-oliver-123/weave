@@ -40,6 +40,16 @@ describe('Linux namespace backend certification', () => {
       .rejects.toThrow('SANDBOX_UNCERTIFIED');
   });
 
+  it('treats the host-observed long-lived child cleanup result as authoritative', async () => {
+    const transport = new FakeTransport(passedProbeOutput(), false);
+    const backend = await LinuxNamespaceBackend.create({
+      workspaceRoot: 'C:\\workspace', transport, transactionRecovery: async () => true,
+    });
+    expect(transport.cleanupProbeCalls).toBe(1);
+    expect(backend.report.evidence.find((item) => item.probeId === 'process_tree_cleanup')?.status).toBe('failed');
+    expect(backend.report.capabilities).toEqual([]);
+  });
+
   it('removes only write capability when startup recovery has a conflict', async () => {
     const backend = await LinuxNamespaceBackend.create({
       workspaceRoot: 'C:\\workspace',
@@ -57,10 +67,15 @@ describe('Linux namespace backend certification', () => {
 class FakeTransport implements NamespaceTransport {
   readonly platform = 'wsl2' as const;
   readonly osDescription = '6.6.0-microsoft-standard-WSL2';
-  constructor(private readonly output: string) {}
+  cleanupProbeCalls = 0;
+  constructor(private readonly output: string, private readonly cleanup = true) {}
   async toSandboxPath(): Promise<string> { return '/mnt/c/workspace'; }
   async run(): Promise<NamespaceExecution> {
     return { stdout: Buffer.from(this.output), stderr: Buffer.alloc(0), exitCode: 0 };
+  }
+  async verifyProcessTreeCleanup(): Promise<boolean> {
+    this.cleanupProbeCalls += 1;
+    return this.cleanup;
   }
 }
 

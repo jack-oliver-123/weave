@@ -22,8 +22,9 @@ export function normalizeToolCall(call: ToolCallRequest, digest: string): Normal
     if (typeof record.command !== 'string') return undefined;
     const cwd = typeof record.cwd === 'string' ? record.cwd : '.';
     requirements = [
-      { type: 'FilesystemRead', paths: [cwd] },
-      { type: 'FilesystemWrite', paths: [cwd] },
+      // Raw shell syntax can address any workspace-relative path regardless of cwd.
+      { type: 'FilesystemRead', paths: ['.'] },
+      { type: 'FilesystemWrite', paths: ['.'] },
       {
         type: 'ProcessSpawn', executable: 'bash', argv: ['--noprofile', '--norc', '-c', record.command],
         cwd, lifetime: record.lifetime === 'task' ? 'task' : 'action', rawShell: true,
@@ -51,6 +52,23 @@ export function normalizeToolCall(call: ToolCallRequest, digest: string): Normal
   });
 }
 
+export function summarizeToolCall(call: ToolCallRequest): string {
+  const input = typeof call.input === 'object' && call.input !== null && !Array.isArray(call.input)
+    ? call.input as Record<string, unknown>
+    : {};
+  if (call.name === 'bash') {
+    return boundedSummary(`bash: ${boundedValue(safeSummaryValue(input.command), 120)} (cwd: ${boundedValue(safeSummaryValue(input.cwd ?? '.'), 40)})`);
+  }
+  if (call.name === 'read_file' || call.name === 'glob' || call.name === 'grep'
+    || call.name === 'create_file' || call.name === 'edit_file') {
+    return boundedSummary(`${call.name}: ${safeSummaryValue(input.path ?? '.')}`);
+  }
+  if (call.name === 'remember') {
+    return boundedSummary(`remember: ${safeSummaryValue(input.purpose)} (${safeSummaryValue(input.scope ?? 'project')})`);
+  }
+  return boundedSummary(`tool: ${call.name}`);
+}
+
 export function executionActionDigest(call: ToolCallRequest): string {
   return computeDigest('execution-action', {
     normalizerVersion: ACTION_NORMALIZER_VERSION,
@@ -73,6 +91,19 @@ function computeDigest(domain: string, value: unknown): string {
     .update(canonicalJson(value), 'utf8')
     .digest('base64url');
   return `${domain}:v1:${output}`;
+}
+
+function safeSummaryValue(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0) return '<unspecified>';
+  return value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function boundedSummary(value: string): string {
+  return value.length <= 180 ? value : `${value.slice(0, 177)}...`;
+}
+
+function boundedValue(value: string, limit: number): string {
+  return value.length <= limit ? value : `${value.slice(0, limit - 3)}...`;
 }
 
 function jsonValue(value: unknown): JsonValue | undefined {

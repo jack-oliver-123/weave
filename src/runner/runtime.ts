@@ -30,6 +30,8 @@ import { WindowsTaskSandbox } from './windows-task-sandbox.js';
 import {
   loadWindowsCertificationArtifact,
   loadWindowsComponentCertificationArtifact,
+  certificationTrustStoreFromEnvironment,
+  type CertificationTrustStore,
 } from './certification-artifact.js';
 
 export interface CertifiedReadRunnerRuntime {
@@ -50,6 +52,7 @@ export interface CertifiedWindowsArtifactRunnerOptions {
   readonly facts: WindowsPlatformFacts;
   readonly evidencePath: string;
   readonly expectedCommit: string;
+  readonly trustedKeys: CertificationTrustStore;
   readonly cli?: WindowsSandboxCli;
 }
 
@@ -61,6 +64,7 @@ export async function createCertifiedWindowsRunnerRuntimeFromArtifact(
     options.evidencePath,
     options.facts,
     options.expectedCommit,
+    options.trustedKeys,
   );
   return createCertifiedWindowsRunnerRuntime(workspaceRoot, {
     facts: options.facts,
@@ -84,17 +88,20 @@ export async function createCertifiedWindowsRunnerRuntimeFromLocalArtifact(
   if (versionResult.status !== 0 || versionResult.stdout.trim() === '') throw new Error('WINDOWS_SANDBOX_UNAVAILABLE');
   const sandboxBackendVersion = windowsSandboxRuntimeVersion(facts, versionResult.stdout.trim());
   const evidenceRoot = resolve(applicationRoot, 'artifacts', 'certification');
+  const trustedKeys = certificationTrustStoreFromEnvironment();
   const sandboxEvidence = await loadWindowsCertificationArtifact(
-    resolve(evidenceRoot, 'windows-sandbox.json'), facts, commit, sandboxBackendVersion,
+    resolve(evidenceRoot, 'windows-sandbox.json'), facts, commit, trustedKeys, sandboxBackendVersion,
   );
   const [networkEvidence, credentialEvidence] = await Promise.all([
     optionalWindowsComponentEvidence(
       resolve(evidenceRoot, 'windows-egress-broker.json'), facts, commit,
       'windows-egress-broker', WINDOWS_EGRESS_BACKEND_VERSION,
+      trustedKeys,
     ),
     optionalWindowsComponentEvidence(
       resolve(evidenceRoot, 'windows-credential-manager.json'), facts, commit,
       'windows-credential-manager', WINDOWS_CREDENTIAL_BACKEND_VERSION,
+      trustedKeys,
     ),
   ]);
   return createCertifiedWindowsRunnerRuntime(workspaceRoot, {
@@ -214,9 +221,10 @@ async function optionalWindowsComponentEvidence(
   commit: string,
   backend: 'windows-egress-broker' | 'windows-credential-manager',
   version: string,
+  trustedKeys: CertificationTrustStore,
 ): Promise<readonly ProbeEvidence[]> {
   try {
-    return await loadWindowsComponentCertificationArtifact(path, facts, commit, backend, version);
+    return await loadWindowsComponentCertificationArtifact(path, facts, commit, backend, version, trustedKeys);
   } catch {
     return [];
   }

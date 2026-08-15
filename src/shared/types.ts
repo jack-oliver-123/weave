@@ -226,6 +226,7 @@ export interface AuthorizationRequestView {
 }
 
 export interface AuthorizationDecisionItem {
+  readonly callId: string;
   readonly actionDigest: string;
   readonly choice: AuthorizationChoice;
 }

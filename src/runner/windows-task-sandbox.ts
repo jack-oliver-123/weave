@@ -1,12 +1,11 @@
 import { randomUUID } from 'node:crypto';
+import { mkdir } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import type { CapabilityPrimitive } from '../security/domain.js';
 import {
-  captureWorkspaceSnapshots,
   defaultTransactionRoot,
   TaskWorkspaceView,
   WorkspaceCommitBroker,
-  type FileSnapshot,
-  type WorkspaceChangeSet,
 } from './workspace-transaction.js';
 import type {
   ActionWorkerBackend,
@@ -16,7 +15,7 @@ import type {
 } from './supervisor.js';
 import type { ResourceBudget } from './resources.js';
 import { WindowsSandboxTaskVm, type WindowsSandboxCli } from './windows-backend.js';
-import { WindowsJobObjectWorker } from './windows-worker-supervisor.js';
+import { provisionWindowsWorkerRuntime, WindowsJobObjectWorker } from './windows-worker-supervisor.js';
 
 export interface WindowsTaskSandboxOptions {
   readonly taskId: string;
@@ -33,9 +32,9 @@ export class WindowsTaskSandbox implements TaskSandboxBackend {
   private constructor(
     private readonly workspaceRoot: string,
     private readonly vm: WindowsSandboxTaskVm,
-    private currentView: TaskWorkspaceView,
-    private currentGuestWorkspace: string,
-    private readonly views: TaskWorkspaceView[],
+    private readonly baselineView: TaskWorkspaceView,
+    private readonly currentView: TaskWorkspaceView,
+    private readonly bridgeGuestPath: string,
     private readonly certifiedCapabilities: ReadonlySet<CapabilityPrimitive>,
     private readonly createId: () => string,
   ) {}
@@ -43,25 +42,28 @@ export class WindowsTaskSandbox implements TaskSandboxBackend {
   static async create(options: WindowsTaskSandboxOptions): Promise<WindowsTaskSandbox> {
     const baselineView = await TaskWorkspaceView.create(options.workspaceRoot);
     let view: TaskWorkspaceView | undefined;
+    let vm: WindowsSandboxTaskVm | undefined;
     try {
       view = await TaskWorkspaceView.create(options.workspaceRoot);
-      const vm = await WindowsSandboxTaskVm.start(options.cli, {
+      vm = await WindowsSandboxTaskVm.start(options.cli, {
         taskId: options.taskId,
         sandboxId: options.sandboxId,
         budget: options.budget,
         baselinePath: baselineView.root,
         cowPath: view.root,
       });
+      const bridgeGuestPath = await provisionWindowsWorkerRuntime(vm, view.root);
       return new WindowsTaskSandbox(
         options.workspaceRoot,
         vm,
+        baselineView,
         view,
-        'C:\\Weave\\Cow',
-        [baselineView, view],
+        bridgeGuestPath,
         new Set(options.certifiedCapabilities),
         options.createId ?? randomUUID,
       );
     } catch (error) {
+      await vm?.stop().catch(() => undefined);
       await Promise.allSettled([baselineView.close(), view?.close() ?? Promise.resolve()]);
       throw error;
     }
@@ -78,21 +80,19 @@ export class WindowsTaskSandbox implements TaskSandboxBackend {
       return new WindowsJobObjectWorker({
         vm: this.vm,
         cowHostRoot: this.currentView.root,
-        guestWorkspaceRoot: this.currentGuestWorkspace,
+        guestWorkspaceRoot: 'C:\\Weave\\Cow',
+        bridgeGuestPath: this.bridgeGuestPath,
         input,
         createId: this.createId,
       });
     }
 
-    const actionView = await TaskWorkspaceView.create(this.currentView.root);
-    const shareId = safeId(this.createId());
-    const guestWorkspace = `C:\\Weave\\Action-${shareId}`;
-    let shared = false;
+    const actionViewsRoot = join(this.currentView.root, '.weave', 'action-views');
+    await mkdir(actionViewsRoot, { recursive: true });
+    const candidatePaths = structuredWriteCandidates(input);
+    const actionView = await this.currentView.fork(actionViewsRoot, candidatePaths);
+    const guestWorkspace = `C:\\Weave\\Cow\\.weave\\action-views\\${basename(actionView.root)}`;
     try {
-      await this.vm.share(actionView.root, guestWorkspace, true);
-      shared = true;
-      this.views.push(actionView);
-      const baselines = await captureWorkspaceSnapshots(this.workspaceRoot);
       const allowedPaths = requirements.flatMap((requirement) => requirement.type === 'FilesystemWrite' ? requirement.paths : []);
       const broker = await WorkspaceCommitBroker.create({
         workspaceRoot: this.workspaceRoot,
@@ -103,15 +103,19 @@ export class WindowsTaskSandbox implements TaskSandboxBackend {
         vm: this.vm,
         cowHostRoot: actionView.root,
         guestWorkspaceRoot: guestWorkspace,
+        bridgeGuestPath: this.bridgeGuestPath,
         input,
         createId: this.createId,
       });
-      return new TransactionalWindowsWorker(delegate, actionView, baselines, broker, async () => {
-        this.currentView = actionView;
-        this.currentGuestWorkspace = guestWorkspace;
-      });
+      return new TransactionalWindowsWorker(
+        delegate,
+        actionView,
+        broker,
+        this.currentView,
+        candidatePaths,
+      );
     } catch (error) {
-      if (!shared) await actionView.close();
+      await actionView.close();
       throw error;
     }
   }
@@ -125,7 +129,7 @@ export class WindowsTaskSandbox implements TaskSandboxBackend {
     } catch (error) {
       errors.push(error);
     }
-    const settled = await Promise.allSettled(this.views.map((view) => view.close()));
+    const settled = await Promise.allSettled([this.baselineView.close(), this.currentView.close()]);
     errors.push(...settled.filter((item): item is PromiseRejectedResult => item.status === 'rejected').map((item) => item.reason));
     if (errors.length > 0) throw new AggregateError(errors, 'Failed to close Windows task sandbox');
   }
@@ -135,25 +139,18 @@ class TransactionalWindowsWorker implements ActionWorkerBackend {
   constructor(
     private readonly delegate: WindowsJobObjectWorker,
     private readonly view: TaskWorkspaceView,
-    private readonly baselines: ReadonlyMap<string, FileSnapshot>,
     private readonly broker: WorkspaceCommitBroker,
-    private readonly adopt: () => Promise<void>,
+    private readonly currentView: TaskWorkspaceView,
+    private readonly candidatePaths: readonly string[] | undefined,
   ) {}
 
   async execute(signal: AbortSignal): Promise<ActionWorkerResult> {
     const outcome = await this.delegate.execute(signal);
     if (outcome.result.isError || signal.aborted) return outcome;
     try {
-      const extracted = await this.view.extractChangeSet(outcome.result.callId);
-      const changeSet: WorkspaceChangeSet = {
-        actionId: extracted.actionId,
-        changes: extracted.changes.map((change) => ({
-          ...change,
-          baseline: this.baselines.get(change.path) ?? { exists: false },
-        })),
-      };
-      await this.broker.commit(changeSet);
-      await this.adopt();
+      const changeSet = await this.view.extractChangeSet(outcome.result.callId, this.candidatePaths);
+      const committed = await this.broker.commit(changeSet);
+      await this.currentView.refreshFrom(this.broker.workspaceRoot, committed.paths);
       return outcome;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Windows transaction failed';
@@ -174,13 +171,18 @@ class TransactionalWindowsWorker implements ActionWorkerBackend {
 
   async close(reason: 'action_completed' | 'cancelled' | 'failed'): Promise<void> {
     void reason;
-    await this.delegate.close();
+    const settled = await Promise.allSettled([this.delegate.close(), this.view.close()]);
+    const errors = settled.filter((item): item is PromiseRejectedResult => item.status === 'rejected').map((item) => item.reason);
+    if (errors.length > 0) throw new AggregateError(errors, 'Failed to close Windows action worker');
   }
 }
 
-function safeId(value: string): string {
-  if (!/^[A-Za-z0-9-]{1,128}$/.test(value)) throw new Error('INVALID_WORKER_ID');
-  return value;
+function structuredWriteCandidates(input: ActionWorkerLaunchInput): readonly string[] | undefined {
+  if (input.call.name !== 'create_file' && input.call.name !== 'edit_file') return undefined;
+  const payload = input.call.input;
+  if (typeof payload !== 'object' || payload === null || !('path' in payload)) return undefined;
+  const path = payload.path;
+  return typeof path === 'string' ? Object.freeze([path]) : undefined;
 }
 
 function transactionErrorCode(message: string): string {

@@ -7,31 +7,33 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ActionWorkerLaunchInput } from '../../../src/runner/supervisor.js';
 import {
   WINDOWS_ACTION_WORKER_SCRIPT,
+  WINDOWS_JOB_SUPERVISOR_SOURCE,
   WINDOWS_JOB_SUPERVISOR_SCRIPT,
   WindowsJobObjectWorker,
 } from '../../../src/runner/windows-worker-supervisor.js';
 
 describe('Windows Job Object worker supervisor', () => {
   it('uses a restricted low-integrity token and enforceable Job Object limits', () => {
-    expect(WINDOWS_JOB_SUPERVISOR_SCRIPT).toContain('OpenProcessToken(GetCurrentProcess()');
-    expect(WINDOWS_JOB_SUPERVISOR_SCRIPT).not.toContain('WTSQueryUserToken');
-    expect(WINDOWS_JOB_SUPERVISOR_SCRIPT).toContain('CreateRestrictedToken');
-    expect(WINDOWS_JOB_SUPERVISOR_SCRIPT).toContain('DISABLE_MAX_PRIVILEGE');
-    expect(WINDOWS_JOB_SUPERVISOR_SCRIPT).not.toContain('LUA_TOKEN');
-    expect(WINDOWS_JOB_SUPERVISOR_SCRIPT).toContain('S-1-16-4096');
-    expect(WINDOWS_JOB_SUPERVISOR_SCRIPT).toContain('JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE');
-    expect(WINDOWS_JOB_SUPERVISOR_SCRIPT).toContain('JOB_OBJECT_LIMIT_ACTIVE_PROCESS');
-    expect(WINDOWS_JOB_SUPERVISOR_SCRIPT).toContain('JOB_OBJECT_LIMIT_JOB_MEMORY');
-    expect(WINDOWS_JOB_SUPERVISOR_SCRIPT).toContain('JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP');
-    expect(WINDOWS_JOB_SUPERVISOR_SCRIPT).toContain('AssignProcessToJobObject');
-    expect(WINDOWS_JOB_SUPERVISOR_SCRIPT).toContain('false, CREATE_SUSPENDED');
+    expect(WINDOWS_JOB_SUPERVISOR_SOURCE).toContain('OpenProcessToken(GetCurrentProcess()');
+    expect(WINDOWS_JOB_SUPERVISOR_SOURCE).not.toContain('WTSQueryUserToken');
+    expect(WINDOWS_JOB_SUPERVISOR_SOURCE).toContain('CreateRestrictedToken');
+    expect(WINDOWS_JOB_SUPERVISOR_SOURCE).toContain('DISABLE_MAX_PRIVILEGE');
+    expect(WINDOWS_JOB_SUPERVISOR_SOURCE).not.toContain('LUA_TOKEN');
+    expect(WINDOWS_JOB_SUPERVISOR_SOURCE).toContain('S-1-16-4096');
+    expect(WINDOWS_JOB_SUPERVISOR_SOURCE).toContain('JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE');
+    expect(WINDOWS_JOB_SUPERVISOR_SOURCE).toContain('JOB_OBJECT_LIMIT_ACTIVE_PROCESS');
+    expect(WINDOWS_JOB_SUPERVISOR_SOURCE).toContain('JOB_OBJECT_LIMIT_JOB_MEMORY');
+    expect(WINDOWS_JOB_SUPERVISOR_SOURCE).toContain('JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP');
+    expect(WINDOWS_JOB_SUPERVISOR_SOURCE).toContain('AssignProcessToJobObject');
+    expect(WINDOWS_JOB_SUPERVISOR_SOURCE).toContain('false, CREATE_SUSPENDED');
     expect(WINDOWS_ACTION_WORKER_SCRIPT).not.toContain('Credential');
+    expect(WINDOWS_JOB_SUPERVISOR_SCRIPT).toContain('Add-Type -Path $BridgePath');
+    expect(WINDOWS_JOB_SUPERVISOR_SCRIPT).not.toContain('icacls.exe $workspaceRoot');
+    expect(WINDOWS_JOB_SUPERVISOR_SCRIPT).not.toContain('Add-Type -TypeDefinition $source');
   });
 
   it.runIf(process.platform === 'win32')('compiles the native supervisor bridge with Windows PowerShell', async () => {
-    const source = /\$source = @'\r?\n([\s\S]*?)\r?\n'@/.exec(WINDOWS_JOB_SUPERVISOR_SCRIPT)?.[1];
-    expect(source).toBeDefined();
-    const encoded = Buffer.from(source!, 'utf8').toString('base64');
+    const encoded = Buffer.from(WINDOWS_JOB_SUPERVISOR_SOURCE, 'utf8').toString('base64');
     await promisify(execFile)('powershell.exe', [
       '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
       `$source=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')); Add-Type -TypeDefinition $source -Language CSharp`,
@@ -76,6 +78,26 @@ describe('Windows Job Object worker supervisor', () => {
     const outcome = await worker.execute(controller.signal);
     expect(outcome.result.content.error?.code).toBe('TOOL_CANCELLED');
     expect(exec).not.toHaveBeenCalled();
+    await worker.close();
+  });
+
+  it('rejects an oversized result before parsing it', async () => {
+    const cow = await mkdtemp(join(tmpdir(), 'weave-windows-worker-output-'));
+    const input = workerInput();
+    const exec = vi.fn(async () => {
+      await writeFile(
+        join(cow, '.weave', 'windows-actions', 'action-output', 'result.json'),
+        Buffer.alloc(input.profile.batchOutputBytes + 1, 0x20),
+      );
+    });
+    const worker = new WindowsJobObjectWorker({
+      vm: { exec } as never,
+      cowHostRoot: cow,
+      input,
+      createId: () => 'action-output',
+    });
+    const outcome = await worker.execute(new AbortController().signal);
+    expect(outcome.result.content.error?.code).toBe('OUTPUT_LIMIT_EXCEEDED');
     await worker.close();
   });
 });

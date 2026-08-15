@@ -6,6 +6,9 @@ on:
 permissions:
   contents: read
 
+env:
+  WEAVE_CERTIFICATION_KEY_ID: weave-certification-v1
+
 jobs:
   certify-wsl2:
     runs-on: [self-hosted, Windows, X64, WSL2]
@@ -26,6 +29,8 @@ jobs:
         run: npx vitest run tests/certification/wsl2-read-tools.test.ts
       - name: Write bound evidence
         if: always()
+        env:
+          WEAVE_CERTIFICATION_SIGNING_KEY: ${{ secrets.WEAVE_CERTIFICATION_SIGNING_KEY }}
         run: node scripts/write-certification-evidence.mjs wsl2 "${{ steps.certification.outcome }}" FilesystemRead,FilesystemWrite,ProcessSpawn process_identity,host_paths_hidden,raw_network_blocked,environment_cleared,devices_hidden,privilege_escalation_blocked,resource_limits,process_tree_cleanup,control_ipc_hidden,brokers_hidden,wsl_windows_mount_hidden,wsl_interop_hidden,wsl_windows_path_hidden
       - name: Upload evidence
         if: always()
@@ -59,6 +64,8 @@ jobs:
           npx vitest run tests/certification/windows-sandbox.test.ts
       - name: Write bound read-slice evidence
         if: always()
+        env:
+          WEAVE_CERTIFICATION_SIGNING_KEY: ${{ secrets.WEAVE_CERTIFICATION_SIGNING_KEY }}
         run: node scripts/write-certification-evidence.mjs windows-sandbox "${{ steps.certification.outcome }}" FilesystemRead windows_11_24h2,windows_sandbox_feature,windows_sandbox_cli,process_identity,host_paths_hidden,raw_network_blocked,environment_cleared,devices_hidden,privilege_escalation_blocked,resource_limits,process_tree_cleanup,control_ipc_hidden,brokers_hidden,windows_registry_hidden,windows_read_tools
       - name: Upload evidence
         if: always()
@@ -93,6 +100,8 @@ jobs:
           npx vitest run tests/certification/windows-sandbox.test.ts tests/unit/runner/workspace-transaction.test.ts
       - name: Write bound transactional-write evidence
         if: always()
+        env:
+          WEAVE_CERTIFICATION_SIGNING_KEY: ${{ secrets.WEAVE_CERTIFICATION_SIGNING_KEY }}
         run: node scripts/write-certification-evidence.mjs windows-sandbox "${{ steps.certification.outcome }}" FilesystemRead,FilesystemWrite windows_11_24h2,windows_sandbox_feature,windows_sandbox_cli,process_identity,host_paths_hidden,raw_network_blocked,environment_cleared,devices_hidden,privilege_escalation_blocked,resource_limits,process_tree_cleanup,control_ipc_hidden,brokers_hidden,windows_registry_hidden,windows_read_tools,windows_transactional_write
       - name: Upload evidence
         if: always()
@@ -126,6 +135,8 @@ jobs:
           npx vitest run tests/certification/windows-sandbox.test.ts
       - name: Write bound structured-process evidence
         if: always()
+        env:
+          WEAVE_CERTIFICATION_SIGNING_KEY: ${{ secrets.WEAVE_CERTIFICATION_SIGNING_KEY }}
         run: node scripts/write-certification-evidence.mjs windows-sandbox "${{ steps.certification.outcome }}" "" windows_structured_process
       - name: Upload evidence
         if: always()
@@ -159,6 +170,8 @@ jobs:
           npx vitest run tests/certification/windows-sandbox.test.ts
       - name: Write explicit Bash-unavailable evidence
         if: always()
+        env:
+          WEAVE_CERTIFICATION_SIGNING_KEY: ${{ secrets.WEAVE_CERTIFICATION_SIGNING_KEY }}
         run: node scripts/write-certification-evidence.mjs windows-sandbox "${{ steps.certification.outcome }}" "" windows_bash=failed
       - name: Upload evidence
         if: always()
@@ -187,6 +200,8 @@ jobs:
         run: npx vitest run tests/certification/windows-credential-manager.test.ts
       - name: Write bound credential evidence
         if: always()
+        env:
+          WEAVE_CERTIFICATION_SIGNING_KEY: ${{ secrets.WEAVE_CERTIFICATION_SIGNING_KEY }}
         run: node scripts/write-certification-evidence.mjs windows-credential-manager "${{ steps.certification.outcome }}" CredentialUse windows_credential_manager
       - name: Upload evidence
         if: always()
@@ -215,6 +230,8 @@ jobs:
         run: npx vitest run tests/certification/windows-network-egress.test.ts tests/unit/security/egress-broker.test.ts
       - name: Write bound network evidence
         if: always()
+        env:
+          WEAVE_CERTIFICATION_SIGNING_KEY: ${{ secrets.WEAVE_CERTIFICATION_SIGNING_KEY }}
         run: node scripts/write-certification-evidence.mjs windows-egress-broker "${{ steps.certification.outcome }}" NetworkEgress windows_network_egress
       - name: Upload evidence
         if: always()

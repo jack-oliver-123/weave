@@ -10,11 +10,16 @@ Windows 默认仍使用已认证的 WSL2 backend。要显式选择 Windows Sandb
 
 ```yaml
 security:
+  permission_mode: supervised
   sandbox:
     backend: windows-sandbox
 ```
 
-该选择不自动安装 Store 版 Sandbox、不提权，也不会在失败后切换到 WSL2 或宿主进程。运行时只从安装根的 `artifacts/certification/` 读取绑定当前 commit 的证据；只读或写入证据缺失时保持纯文本。结构化进程通过但 Bash 未通过时，`ProcessSpawn` 和 `bash` 仍不可见。
+该选择不自动安装 Store 版 Sandbox、不提权，也不会在失败后切换到 WSL2 或宿主进程。运行时只从安装根的 `artifacts/certification/` 读取绑定当前 commit 的证据；只读证据缺失时保持纯文本，写入证据缺失时仅发布只读能力。结构化进程通过但 Bash 未通过时，`ProcessSpawn` 和 `bash` 仍不可见。
+
+权限模式默认是 `supervised`，也可在 `security.permission_mode` 中显式设为 `read_only` 或 `autonomous`。用户规则从 `~/.weave/security.yaml` 加载，项目收紧规则从工作区 `.weave-policy.yaml` 加载；文件不可信或规则无效时启动失败关闭。
+
+认证工作流仅在写证据步骤读取 `WEAVE_CERTIFICATION_SIGNING_KEY`（Ed25519 PKCS8 DER 的 base64url）。运行主机必须通过 `WEAVE_CERTIFICATION_PUBLIC_KEY` 提供匹配的 SPKI DER 公钥，并可用 `WEAVE_CERTIFICATION_KEY_ID` 选择 key ID；缺少信任锚、签名无效或旧版无签名 artifact 时，Windows 工具能力不可用。
 
 ## 权限与 HITL
 

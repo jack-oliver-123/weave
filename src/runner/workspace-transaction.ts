@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { constants as fsConstants, type BigIntStats } from 'node:fs';
 import {
   copyFile,
   link,
@@ -88,11 +89,34 @@ export class TaskWorkspaceView {
     return view;
   }
 
-  async extractChangeSet(actionId: string): Promise<WorkspaceChangeSet> {
+  async fork(parent = tmpdir(), candidatePaths?: readonly string[]): Promise<TaskWorkspaceView> {
+    this.assertOpen();
+    const root = await mkdtemp(join(parent, 'weave-task-workspace-'));
+    const view = new TaskWorkspaceView(this.workspaceRoot, root);
+    try {
+      const candidates = normalizeCandidates(candidatePaths);
+      if (candidates === undefined) {
+        await view.copyTree(this.root, root, '', this.viewBaseline, this.hostBaseline);
+      } else {
+        for (const path of candidates) await view.copyCandidate(this.root, root, path, this.viewBaseline, this.hostBaseline);
+      }
+      return view;
+    } catch (error) {
+      await view.close();
+      throw error;
+    }
+  }
+
+  async extractChangeSet(actionId: string, candidatePaths?: readonly string[]): Promise<WorkspaceChangeSet> {
     this.assertOpen();
     const current = new Map<string, FileSnapshot>();
-    await collectSnapshots(this.root, this.root, current);
-    const paths = [...new Set([...this.viewBaseline.keys(), ...current.keys()])].sort();
+    const candidates = normalizeCandidates(candidatePaths);
+    if (candidates === undefined) await collectSnapshots(this.root, this.root, current);
+    else await collectCandidateSnapshots(this.root, candidates, current);
+    const baselinePaths = candidates === undefined
+      ? this.viewBaseline.keys()
+      : [...this.viewBaseline.keys()].filter((path) => candidates.some((candidate) => matchesCandidate(path, candidate)));
+    const paths = [...new Set([...baselinePaths, ...current.keys()])].sort();
     const changes: WorkspaceChange[] = [];
     for (const path of paths) {
       const before = this.viewBaseline.get(path) ?? { exists: false };
@@ -107,13 +131,39 @@ export class TaskWorkspaceView {
     return Object.freeze({ actionId, changes: Object.freeze(changes) });
   }
 
+  async refreshFrom(workspaceRoot: string, paths: readonly string[]): Promise<void> {
+    this.assertOpen();
+    const sourceRoot = await realpath(workspaceRoot);
+    for (const value of [...new Set(paths.map(normalizeRelative))]) {
+      const source = resolveRelative(sourceRoot, value);
+      const target = resolveRelative(this.root, value);
+      const host = await snapshot(source);
+      if (!host.exists) {
+        await rm(target, { force: true });
+        this.hostBaseline.delete(value);
+        this.viewBaseline.delete(value);
+        continue;
+      }
+      await mkdir(dirname(target), { recursive: true });
+      await copyFile(source, target, fsConstants.COPYFILE_FICLONE);
+      this.hostBaseline.set(value, host);
+      this.viewBaseline.set(value, await snapshotWithDigest(target, host));
+    }
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
     await rm(this.root, { recursive: true, force: true });
   }
 
-  private async copyTree(sourceRoot: string, targetRoot: string, current: string): Promise<void> {
+  private async copyTree(
+    sourceRoot: string,
+    targetRoot: string,
+    current: string,
+    knownSource?: ReadonlyMap<string, FileSnapshot>,
+    knownHost?: ReadonlyMap<string, FileSnapshot>,
+  ): Promise<void> {
     const sourceDirectory = resolveRelative(sourceRoot, current);
     for (const entry of await readdir(sourceDirectory, { withFileTypes: true })) {
       if (EXCLUDED_NAMES.has(entry.name)) continue;
@@ -123,25 +173,64 @@ export class TaskWorkspaceView {
       const metadata = await lstat(source, { bigint: true });
       if (metadata.isDirectory()) {
         await mkdir(target);
-        await this.copyTree(sourceRoot, targetRoot, path);
+        await this.copyTree(sourceRoot, targetRoot, path, knownSource, knownHost);
       } else if (metadata.isSymbolicLink()) {
         const resolved = await realpath(source);
         assertInside(sourceRoot, resolved);
         await symlink(await readlink(source), target, (await stat(resolved)).isDirectory() ? 'dir' : 'file');
       } else if (metadata.isFile()) {
-        const baselineSnapshot = await snapshot(source);
-        this.hostBaseline.set(path, baselineSnapshot);
-        const hardlinkKey = `${metadata.dev}:${metadata.ino}`;
-        const existing = metadata.nlink > 1n ? this.copiedHardlinks.get(hardlinkKey) : undefined;
-        if (existing === undefined) {
-          await copyFile(source, target);
-          if (metadata.nlink > 1n) this.copiedHardlinks.set(hardlinkKey, target);
-        } else {
-          await link(existing, target);
-        }
-        this.viewBaseline.set(path, await snapshot(target));
+        await this.copyFile(source, target, path, metadata, knownSource, knownHost);
       }
     }
+  }
+
+  private async copyCandidate(
+    sourceRoot: string,
+    targetRoot: string,
+    path: string,
+    knownSource: ReadonlyMap<string, FileSnapshot>,
+    knownHost: ReadonlyMap<string, FileSnapshot>,
+  ): Promise<void> {
+    const source = resolveRelative(sourceRoot, path);
+    const target = resolveRelative(targetRoot, path);
+    let metadata: BigIntStats;
+    try { metadata = await lstat(source, { bigint: true }); }
+    catch (error) {
+      if (!isMissing(error)) throw error;
+      await mkdir(dirname(target), { recursive: true });
+      return;
+    }
+    if (metadata.isDirectory()) {
+      await mkdir(target, { recursive: true });
+      await this.copyTree(sourceRoot, targetRoot, path, knownSource, knownHost);
+    } else if (metadata.isFile() && !metadata.isSymbolicLink()) {
+      await mkdir(dirname(target), { recursive: true });
+      await this.copyFile(source, target, path, metadata, knownSource, knownHost);
+    } else {
+      throw new Error('TARGET_IS_SYMLINK');
+    }
+  }
+
+  private async copyFile(
+    source: string,
+    target: string,
+    path: string,
+    metadata: BigIntStats,
+    knownSource?: ReadonlyMap<string, FileSnapshot>,
+    knownHost?: ReadonlyMap<string, FileSnapshot>,
+  ): Promise<void> {
+    const known = knownSource?.get(path);
+    const baselineSnapshot = known?.identity === identity(metadata) ? known : await snapshot(source, metadata);
+    this.hostBaseline.set(path, knownHost?.get(path) ?? baselineSnapshot);
+    const hardlinkKey = `${metadata.dev}:${metadata.ino}`;
+    const existing = metadata.nlink > 1n ? this.copiedHardlinks.get(hardlinkKey) : undefined;
+    if (existing === undefined) {
+      await copyFile(source, target, fsConstants.COPYFILE_FICLONE);
+      if (metadata.nlink > 1n) this.copiedHardlinks.set(hardlinkKey, target);
+    } else {
+      await link(existing, target);
+    }
+    this.viewBaseline.set(path, await snapshotWithDigest(target, baselineSnapshot));
   }
 
   private assertOpen(): void { if (this.closed) throw new Error('TASK_WORKSPACE_CLOSED'); }
@@ -194,6 +283,7 @@ export class WorkspaceCommitBroker {
   async commit(changeSet: WorkspaceChangeSet): Promise<CommitResult> {
     if (this.writeDisabled) throw new Error('RECOVERY_CONFLICT');
     if (changeSet.changes.length === 0) return { transactionId: this.createId(), state: 'CLEANED', paths: [] };
+    await this.assertNotWorkspaceRootDeletion(changeSet);
     const planned = [];
     for (const change of changeSet.changes) {
       const path = normalizeRelative(change.path);
@@ -309,6 +399,15 @@ export class WorkspaceCommitBroker {
     }
   }
 
+  private async assertNotWorkspaceRootDeletion(changeSet: WorkspaceChangeSet): Promise<void> {
+    const deletions = changeSet.changes.filter((change) => change.postImage === null);
+    if (deletions.length === 0) return;
+    const current = await captureWorkspaceSnapshots(this.workspaceRoot);
+    if (current.size === 0) return;
+    const deleted = new Set(deletions.map((change) => normalizeRelative(change.path)));
+    if ([...current.keys()].every((path) => deleted.has(path))) throw new Error('WORKSPACE_ROOT_DELETE');
+  }
+
   private async inject(point: string): Promise<void> { await this.fault?.(point); }
 }
 
@@ -342,14 +441,30 @@ async function collectSnapshots(root: string, directory: string, output: Map<str
   }
 }
 
-async function snapshot(path: string): Promise<FileSnapshot> {
+async function collectCandidateSnapshots(
+  root: string,
+  candidates: readonly string[],
+  output: Map<string, FileSnapshot>,
+): Promise<void> {
+  for (const candidate of candidates) {
+    const absolute = candidate === '.' ? root : resolveRelative(root, candidate);
+    let metadata: BigIntStats;
+    try { metadata = await lstat(absolute, { bigint: true }); }
+    catch (error) { if (isMissing(error)) continue; throw error; }
+    if (metadata.isDirectory()) await collectSnapshots(root, absolute, output);
+    else if (metadata.isFile() && candidate !== '.') output.set(candidate, await snapshot(absolute, metadata));
+    else if (metadata.isSymbolicLink()) throw new Error('TARGET_IS_SYMLINK');
+  }
+}
+
+async function snapshot(path: string, knownMetadata?: BigIntStats): Promise<FileSnapshot> {
   try {
-    const metadata = await lstat(path, { bigint: true });
+    const metadata = knownMetadata ?? await lstat(path, { bigint: true });
     if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error('TARGET_IS_SYMLINK');
     const content = await readFile(path);
     return Object.freeze({
       exists: true,
-      identity: `${metadata.dev}:${metadata.ino}:${metadata.size}:${metadata.mtimeNs}`,
+      identity: identity(metadata),
       digest: digest(content),
       size: Number(metadata.size),
     });
@@ -357,6 +472,12 @@ async function snapshot(path: string): Promise<FileSnapshot> {
     if (isMissing(error)) return Object.freeze({ exists: false });
     throw error;
   }
+}
+
+async function snapshotWithDigest(path: string, source: FileSnapshot): Promise<FileSnapshot> {
+  const metadata = await lstat(path, { bigint: true });
+  if (!metadata.isFile() || metadata.isSymbolicLink() || source.digest === undefined) throw new Error('TARGET_IS_SYMLINK');
+  return Object.freeze({ exists: true, identity: identity(metadata), digest: source.digest, size: Number(metadata.size) });
 }
 
 async function durableWrite(path: string, content: Uint8Array): Promise<void> {
@@ -381,6 +502,15 @@ function normalizeRelative(path: string): string {
   return parts.join('/');
 }
 
+function normalizeCandidates(paths: readonly string[] | undefined): readonly string[] | undefined {
+  if (paths === undefined || paths.some((path) => path === '.')) return undefined;
+  return Object.freeze([...new Set(paths.map(normalizeRelative))]);
+}
+
+function matchesCandidate(path: string, candidate: string): boolean {
+  return path === candidate || path.startsWith(`${candidate}/`);
+}
+
 function resolveRelative(root: string, path: string): string {
   const target = resolve(root, path);
   assertInside(root, target);
@@ -398,6 +528,9 @@ function assertOutside(workspace: string, target: string): void {
 }
 
 function digest(content: Uint8Array): string { return createHash('sha256').update(content).digest('base64url'); }
+function identity(metadata: BigIntStats): string {
+  return `${metadata.dev}:${metadata.ino}:${metadata.size}:${metadata.mtimeNs}`;
+}
 function sameSnapshot(left: FileSnapshot, right: FileSnapshot): boolean {
   return left.exists === right.exists && (!left.exists || (left.digest === right.digest && left.identity === right.identity));
 }

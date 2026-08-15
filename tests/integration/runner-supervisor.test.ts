@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createModelActionGateway } from '../../src/engine/model-action-gateway.js';
 import {
   authenticateRunnerSession,
   buildCapabilityReport,
@@ -26,6 +27,7 @@ import {
   type SecurityAuditTaskResource,
 } from '../../src/security/index.js';
 import type { ModelExchangeResponse, RuntimeStateContext, ToolCallRequest, ToolCallResult, ToolDefinition } from '../../src/shared/types.js';
+import { FakeLlmClient } from '../fixtures/fake-llm-client.js';
 
 const now = 1_700_000_000_000;
 const call: ToolCallRequest = {
@@ -37,6 +39,46 @@ const readTool: ToolDefinition = {
 };
 
 describe('Runner Supervisor vertical boundary', () => {
+  it('uses epoch time by default across Gateway tickets, Supervisor verification, and audit records', async () => {
+    const audit = new FakeAudit();
+    const backend = new FakeBackend(reportWith('passed'));
+    let nextId = 0;
+    const createId = () => `default-clock-id-${++nextId}`;
+    const supervisor = new RunnerSupervisor(authenticatedSession(), backend, createId);
+    const runner = new SupervisorActionRunnerParticipant(
+      supervisor, [readTool], defaultResourceBudget({ cpuCores: 8, memoryBytes: 16 * 1024 ** 3 }),
+      () => 'sandbox-default-clock', ['FilesystemRead'],
+    );
+    const client = new FakeLlmClient(
+      { name: 'test', protocol: 'openai-responses', model: 'test-model' },
+      [[
+        { event: { type: 'stream_start' } },
+        { event: { type: 'tool_calls', calls: [call] } },
+        { event: { type: 'stream_complete', finishReason: 'stop' } },
+      ]],
+    );
+    const gateway = createModelActionGateway(client, {
+      runner,
+      audit: { openTask: async () => audit },
+      createId,
+    });
+    const task = await gateway.openTask(gatewayTaskInput());
+    const runtime: RuntimeStateContext = { type: 'agent_state', mode: 'react', iterationLimit: 10 };
+    const model = await task.performModelExchange(
+      task.prepareModelExchange({ runId: 'run-default-clock', iteration: 1, runtime, businessTools: [readTool] }),
+      new AbortController().signal,
+    );
+    const outcome = await task.performActionBatch(
+      task.prepareActionBatch('run-default-clock', model.proposalBatch!.proposalBatchRef),
+      new AbortController().signal,
+    );
+
+    expect(outcome).toMatchObject({ kind: 'business', batch: { results: [{ isError: false }] } });
+    expect(audit.records.length).toBeGreaterThan(0);
+    expect(audit.records.every((record) => record.occurredAt > 1_600_000_000_000)).toBe(true);
+    await task.close('completed');
+  });
+
   it('re-normalizes the action, audits before nonce consumption, and gives Worker no ticket or control channel', async () => {
     const setup = await createSetup();
     const ticket = issue(setup.issuer, call);

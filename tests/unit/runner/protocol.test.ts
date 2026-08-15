@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
+  authenticateRunnerSession,
   EphemeralRunnerIdentity,
   RUNNER_PROTOCOL_VERSION,
   validateLocalIpcEndpoint,
@@ -37,4 +38,63 @@ describe('Runner local control protocol', () => {
       role: 'supervisor', identity: 'runner-1', challenge: hostChallenge, publicKey: supervisor.publicKey,
     })).toThrow('HANDSHAKE_IDENTITY_MISMATCH');
   });
+
+  it('rejects an invalid signature before a control-plane Supervisor or Task can be created', () => {
+    const fixture = sessionFixture();
+    const createSupervisor = vi.fn();
+    const openTask = vi.fn();
+    const signature = fixture.input.supervisorProof.signature;
+    const tamperedProof = {
+      ...fixture.input.supervisorProof,
+      signature: `${signature[0] === 'A' ? 'B' : 'A'}${signature.slice(1)}`,
+    };
+
+    expect(() => {
+      const session = authenticateRunnerSession({ ...fixture.input, supervisorProof: tamperedProof });
+      createSupervisor(session);
+      openTask();
+    }).toThrow('RUNNER_HANDSHAKE_SIGNATURE_INVALID');
+    expect(createSupervisor).not.toHaveBeenCalled();
+    expect(openTask).not.toHaveBeenCalled();
+  });
+
+  it('rejects challenge reuse and mismatched session identities', () => {
+    const fixture = sessionFixture();
+    const reusedChallenge = 'reused-challenge-123456';
+    expect(() => authenticateRunnerSession({
+      ...fixture.input,
+      hostProof: fixture.host.prove('host', reusedChallenge),
+      supervisorProof: fixture.supervisor.prove('supervisor', reusedChallenge),
+    })).toThrow('RUNNER_HANDSHAKE_CHALLENGE_REUSE');
+    expect(() => authenticateRunnerSession({
+      ...fixture.input,
+      expectedRunnerIdentity: 'other-runner',
+    })).toThrow('RUNNER_HANDSHAKE_IDENTITY_MISMATCH');
+  });
 });
+
+function sessionFixture() {
+  const host = new EphemeralRunnerIdentity('host-1');
+  const supervisor = new EphemeralRunnerIdentity('runner-1');
+  return {
+    host,
+    supervisor,
+    input: {
+      endpoint: {
+        protocolVersion: RUNNER_PROTOCOL_VERSION,
+        transport: 'windows_named_pipe' as const,
+        address: '\\\\.\\pipe\\weave-runner-session',
+        ownerIdentity: 'user-1',
+        access: 'current_user_only' as const,
+        tcpListening: false as const,
+      },
+      expectedOwner: 'user-1',
+      expectedHostIdentity: host.identity,
+      expectedRunnerIdentity: supervisor.identity,
+      hostProof: host.prove('host', 'supervisor-challenge-123456'),
+      hostPublicKey: host.publicKey,
+      supervisorProof: supervisor.prove('supervisor', 'host-challenge-1234567890'),
+      supervisorPublicKey: supervisor.publicKey,
+    },
+  };
+}

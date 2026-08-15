@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   deriveWindowsWorkerPolicy,
   probeWindowsSandbox,
-  WINDOWS_JOB_SUPERVISOR_SCRIPT,
+  WINDOWS_JOB_SUPERVISOR_SOURCE,
   WindowsSandboxBackend,
   WindowsSandboxTaskVm,
   windowsSandboxCliCapturesOutput,
@@ -129,12 +129,12 @@ describe('Windows Sandbox backend', () => {
   });
 
   it('derives the restricted worker token from the sandbox login instead of a WTS console session', () => {
-    expect(WINDOWS_JOB_SUPERVISOR_SCRIPT).toContain('OpenProcessToken(GetCurrentProcess()');
-    expect(WINDOWS_JOB_SUPERVISOR_SCRIPT).toContain('CreateRestrictedToken(userToken, DISABLE_MAX_PRIVILEGE, 0, IntPtr.Zero, 0, IntPtr.Zero, 0, IntPtr.Zero');
-    expect(WINDOWS_JOB_SUPERVISOR_SCRIPT).not.toContain('LUA_TOKEN');
-    expect(WINDOWS_JOB_SUPERVISOR_SCRIPT).not.toContain('WTSQueryUserToken');
-    expect(WINDOWS_JOB_SUPERVISOR_SCRIPT).toContain('{ "USERPROFILE", profile }');
-    expect(WINDOWS_JOB_SUPERVISOR_SCRIPT).toContain('{ "LOCALAPPDATA", Path.Combine(profile');
+    expect(WINDOWS_JOB_SUPERVISOR_SOURCE).toContain('OpenProcessToken(GetCurrentProcess()');
+    expect(WINDOWS_JOB_SUPERVISOR_SOURCE).toContain('CreateRestrictedToken(userToken, DISABLE_MAX_PRIVILEGE, 0, IntPtr.Zero, 0, IntPtr.Zero, 0, IntPtr.Zero');
+    expect(WINDOWS_JOB_SUPERVISOR_SOURCE).not.toContain('LUA_TOKEN');
+    expect(WINDOWS_JOB_SUPERVISOR_SOURCE).not.toContain('WTSQueryUserToken');
+    expect(WINDOWS_JOB_SUPERVISOR_SOURCE).toContain('{ "USERPROFILE", profile }');
+    expect(WINDOWS_JOB_SUPERVISOR_SOURCE).toContain('{ "LOCALAPPDATA", Path.Combine(profile');
   });
 
   it('accepts the SandboxId field returned by the Windows Sandbox CLI', async () => {

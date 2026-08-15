@@ -83,7 +83,9 @@ export class ProviderCredentialBroker {
     init: RequestInit = {},
   ): Promise<Response> {
     const url = input instanceof Request ? new URL(input.url) : new URL(input.toString());
-    if (url.origin !== new URL(expectedOrigin).origin) throw new Error('MODEL_DESTINATION_MISMATCH');
+    const expected = new URL(expectedOrigin);
+    if (url.protocol !== 'https:' || expected.protocol !== 'https:') throw new Error('MODEL_DESTINATION_TLS_REQUIRED');
+    if (url.origin !== expected.origin) throw new Error('MODEL_DESTINATION_MISMATCH');
     return this.store.withSecret(reference, async (bytes) => {
       const secret = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
       const headers = new Headers(input instanceof Request ? input.headers : undefined);

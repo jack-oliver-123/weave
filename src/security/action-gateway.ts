@@ -33,7 +33,7 @@ import { PathCapabilityBoundary } from './path-boundary.js';
 import { SecureContextLedger } from './secure-context.js';
 import type { SecurityAuditParticipant, SecurityAuditRecord, SecurityAuditTaskResource } from './audit.js';
 import { SecurityInternalResourceRegistry } from './internal-resources.js';
-import { executionActionDigest, executionCapabilityDigest, normalizeToolCall } from './action-normalizer.js';
+import { executionActionDigest, executionCapabilityDigest, normalizeToolCall, summarizeToolCall } from './action-normalizer.js';
 import { CapabilityTicketIssuer } from './tickets.js';
 
 export interface OpenActionTaskInput {
@@ -101,7 +101,17 @@ export interface ActionRunnerParticipant {
 }
 
 export interface ModelProviderTaskResource extends TaskLifecycleResource {
-  exchange(input: ModelExchangeInput, signal: AbortSignal): Promise<ModelExchangeResponse>;
+  exchange(
+    input: ModelExchangeInput,
+    signal: AbortSignal,
+    authorization?: ModelExchangeAuthorization,
+  ): Promise<ModelExchangeResponse>;
+}
+
+export interface ModelExchangeAuthorization {
+  readonly taskId: string;
+  readonly destination: ModelExchangeInput['destination'];
+  readonly sensitiveValues: readonly string[];
 }
 
 export interface ModelProviderParticipant {
@@ -381,19 +391,24 @@ class ActionTaskImpl implements ActionTask {
     this.pendingExchanges.delete(request.modelExchangeRef);
     const context = this.snapshot.modelContext;
     if (context === undefined) throw new Error('MODEL_EXCHANGE_UNAVAILABLE: Task 缺少模型上下文');
+    const destination = deepFreeze({
+      profile: this.snapshot.modelDestination.profile,
+      protocol: this.snapshot.modelDestination.protocol,
+      model: this.snapshot.modelDestination.model,
+      origin: this.snapshot.modelDestination.origin,
+    });
     const response = await this.provider.exchange({
-      destination: {
-        profile: this.snapshot.modelDestination.profile,
-        protocol: this.snapshot.modelDestination.protocol,
-        model: this.snapshot.modelDestination.model,
-        origin: this.snapshot.modelDestination.origin,
-      },
+      destination,
       runtime: pending.runtime,
       ...(context.environment === undefined ? {} : { environment: context.environment }),
       tools: [...(pending.businessTools ?? []), ...(pending.controlTools ?? pending.tools ?? [])],
       messages: this.ledger.messagesFor('model'),
       maxTokens: context.maxTokens,
-    }, signal);
+    }, signal, deepFreeze({
+      taskId: this.taskId,
+      destination,
+      sensitiveValues: this.ledger.authorizedSensitiveValuesFor('model'),
+    }));
     const blocks: readonly MessageContent[] = [
       ...(response.text === '' ? [] : [{ type: 'text' as const, text: response.text }]),
       ...response.calls.map((call) => ({ type: 'tool_call' as const, call })),
@@ -423,7 +438,7 @@ class ActionTaskImpl implements ActionTask {
       toolName: call.name,
       actionDigest: this.digests.action({ name: call.name, input: call.input }),
       kind: controlNames.has(call.name) ? 'control' : 'business',
-      summary: `调用 ${call.name}`,
+      summary: summarizeToolCall(call),
     }));
     const proposalBatchRef = this.createId();
     this.proposalBatches.set(proposalBatchRef, deepFreeze({
@@ -518,6 +533,20 @@ class ActionTaskImpl implements ActionTask {
       if (this.denialMemory.contains(action.digest)) {
         return { action, call, effect: 'deny' as const, code: 'PREVIOUSLY_DENIED', risks: [] as readonly string[] };
       }
+      const commandRisk = this.riskCheck.evaluate(action, this.snapshot.workspaceRoot ?? process.cwd());
+      if (commandRisk.verdict === 'hard_deny' || pathAssessment?.allowed === false) {
+        const evaluated = this.evaluator.evaluate({
+          action,
+          mode: this.snapshot.permissionMode,
+          rules: this.snapshot.permissionRules,
+          commandRisk,
+          ...(pathAssessment === undefined ? {} : { pathBoundary: pathAssessment }),
+        });
+        return {
+          action, call, effect: evaluated.effect, code: evaluated.code, risks: evaluated.risks,
+          matchedRuleIds: evaluated.matchedRuleIds,
+        };
+      }
       if (this.authorization.hasGrant(call.callId, action.digest, action.digest)) {
         return { action, call, effect: 'allow' as const, code: 'TASK_GRANT', risks: [] as readonly string[] };
       }
@@ -525,7 +554,7 @@ class ActionTaskImpl implements ActionTask {
         action,
         mode: this.snapshot.permissionMode,
         rules: this.snapshot.permissionRules,
-        commandRisk: this.riskCheck.evaluate(action, this.snapshot.workspaceRoot ?? process.cwd()),
+        commandRisk,
         ...(pathAssessment === undefined ? {} : { pathBoundary: pathAssessment }),
       });
       return {
@@ -562,7 +591,7 @@ class ActionTaskImpl implements ActionTask {
           callId: item.call.callId,
           actionDigest: item.action.digest,
           toolName: item.call.name,
-          summary: `授权 ${item.call.name}`,
+          summary: summarizeToolCall(item.call),
           capabilityTypes: item.action.manifest.requirements.map((requirement) => requirement.type),
           risks: item.risks,
         })),
@@ -577,14 +606,14 @@ class ActionTaskImpl implements ActionTask {
         if (this.pendingAuthorization === pending) this.pendingAuthorization = undefined;
       }
       this.authorization.resolveHitl();
-      const resolutionByDigest = new Map(resolutions.map((item) => [item.actionDigest, item.choice]));
+      const resolutionByCallId = new Map(resolutions.map((item) => [item.callId, item.choice]));
       for (const item of ask) {
-        const choice = resolutionByDigest.get(item.action.digest)!;
-        userChoices.set(item.action.digest, choice);
+        const choice = resolutionByCallId.get(item.call.callId)!;
+        userChoices.set(item.call.callId, choice);
       }
       try {
         await this.audit.append(ask.map((item) => {
-          const choice = userChoices.get(item.action.digest)!;
+          const choice = userChoices.get(item.call.callId)!;
           return this.auditRecord({
             phase: 'hitl', runId: request.runId, callId: item.call.callId,
             actionId: item.action.actionId, actionDigest: item.action.digest,
@@ -601,16 +630,20 @@ class ActionTaskImpl implements ActionTask {
         throw new SecurityIntegrityFailureError('HITL_AUDIT_FAILED', 'Authorization decision audit failed before execution');
       }
       for (const item of ask) {
-        const choice = userChoices.get(item.action.digest)!;
-        if (choice === 'cancel') throw new PermissionCancelledError();
-        if (choice === 'deny') {
-          this.denialMemory.record(item.action.digest, 'deny');
-          denied.set(item.call.callId, gatewayErrorResult(item.call, 'PERMISSION_DENIED', '用户拒绝了该动作。'));
-        } else if (choice === 'allow_once') {
-          this.authorization.grantOnce(item.call.callId, item.action.digest);
-          this.authorization.hasGrant(item.call.callId, item.action.digest);
-        } else {
-          this.authorization.grantForTask(item.action.digest, item.action.digest);
+        const choice = userChoices.get(item.call.callId)!;
+        switch (choice) {
+          case 'cancel': throw new PermissionCancelledError();
+          case 'deny':
+            this.denialMemory.record(item.action.digest, 'deny');
+            denied.set(item.call.callId, gatewayErrorResult(item.call, 'PERMISSION_DENIED', '用户拒绝了该动作。'));
+            break;
+          case 'allow_once':
+            this.authorization.grantOnce(item.call.callId, item.action.digest);
+            this.authorization.hasGrant(item.call.callId, item.action.digest);
+            break;
+          case 'allow_for_task':
+            this.authorization.grantForTask(item.action.digest, item.action.digest);
+            break;
         }
       }
     }
@@ -626,12 +659,12 @@ class ActionTaskImpl implements ActionTask {
           phase: 'preflight', runId: request.runId, callId: call.callId,
           actionId: item?.action.actionId,
           actionDigest: item?.action.digest ?? safeAction?.actionDigest,
-          actionSummary: safeAction?.summary ?? `调用 ${call.name}`,
+          actionSummary: `Tool ${call.name}`,
           capabilityTypes: item?.action.manifest.requirements.map((requirement) => requirement.type),
           risks: item?.risks,
           ruleIds: item?.matchedRuleIds,
           permissionMode: this.snapshot.permissionMode,
-          userDecision: item === undefined ? 'not_required' : userChoices.get(item.action.digest) ?? 'not_required',
+          userDecision: item === undefined ? 'not_required' : userChoices.get(item.call.callId) ?? 'not_required',
           outcome: error === undefined ? 'allowed' : 'denied',
           errorCategory: error?.code,
         });
@@ -694,7 +727,7 @@ class ActionTaskImpl implements ActionTask {
         return this.auditRecord({
           phase: 'outcome', runId: request.runId, callId: result.callId,
           actionDigest: safeAction?.actionDigest,
-          actionSummary: safeAction?.summary ?? `调用 ${result.toolName}`,
+          actionSummary: `Tool ${result.toolName}`,
           outcome: result.isError ? 'failed' : 'succeeded',
           errorCategory: result.content.error?.code,
         });

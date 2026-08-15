@@ -7,7 +7,11 @@ for (const name of ['certify-linux.yml', 'certify-windows.yml']) {
   const workflow = parse(source);
   assert.deepEqual(workflow.permissions, { contents: 'read' });
   assert.ok(workflow.on.workflow_dispatch !== undefined, `${name} must support explicit certification`);
-  assert.doesNotMatch(source, /secrets\.|continue-on-error:|smoke:live|--unsafe/);
+  assert.match(source, /WEAVE_CERTIFICATION_SIGNING_KEY:\s*\$\{\{ secrets\.WEAVE_CERTIFICATION_SIGNING_KEY \}\}/);
+  assert.doesNotMatch(
+    source.replace(/secrets\.WEAVE_CERTIFICATION_SIGNING_KEY/g, ''),
+    /secrets\.|continue-on-error:|smoke:live|--unsafe/,
+  );
   assert.match(source, /write-certification-evidence\.mjs/);
   assert.match(source, /upload-artifact@[0-9a-f]{40}/);
   for (const action of source.matchAll(/^\s*uses:\s*([^\s#]+)(?:\s+#.*)?$/gm)) {

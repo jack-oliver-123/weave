@@ -45,7 +45,20 @@ describe('loadConfig', () => {
     expect(loaded.path).toBe(join(home, '.weave', 'config.yaml'));
     expect(loaded.selected.name).toBe('claude');
     expect(loaded.selected.maxTokens).toBe(4096);
+    expect(loaded.permissionMode).toBe('supervised');
     expect(loaded.auditRetention).toEqual({ days: 30, maxBytes: 100 * 1024 * 1024 });
+  });
+
+  it('loads an explicit permission mode and rejects unsafe unknown values', async () => {
+    const path = await writeConfig(validConfig(`security:
+  permission_mode: autonomous
+`));
+    await expect(loadConfig({ configPath: path })).resolves.toMatchObject({ permissionMode: 'autonomous' });
+
+    const invalid = await writeConfig(validConfig(`security:
+  permission_mode: full_access
+`));
+    await expect(loadConfig({ configPath: invalid })).rejects.toMatchObject({ field: 'security.permission_mode' });
   });
 
   it('loads bounded security audit retention settings', async () => {
@@ -127,6 +140,7 @@ describe('loadConfig', () => {
     ['duplicate name', `${validConfig()}\n  - name: claude\n    protocol: openai-responses\n    model: gpt\n    base_url: https://api.openai.com/v1\n    credential: provider:gpt\n    thinking: false\n`, 'profiles[1].name'],
     ['unknown default', validConfig().replace('default_profile: claude', 'default_profile: missing'), 'default_profile'],
     ['unknown protocol', validConfig().replace('anthropic-messages', 'custom-protocol'), 'profiles[0].protocol'],
+    ['plaintext provider URL', validConfig().replace('https://api.anthropic.com', 'http://api.anthropic.com'), 'profiles[0].base_url'],
     ['full endpoint URL', validConfig().replace('https://api.anthropic.com', 'https://api.anthropic.com/v1/messages'), 'profiles[0].base_url'],
   ])('rejects %s with a field-level diagnostic', async (_name, content, field) => {
     const path = await writeConfig(content);

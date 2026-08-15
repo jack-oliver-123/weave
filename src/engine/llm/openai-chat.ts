@@ -64,7 +64,7 @@ export class OpenAIChatCompletionsClient implements LlmClient {
         ...(encoded.tools === undefined ? {} : { tools: encoded.tools, toolChoice: encoded.toolChoice }),
         signal: guard.signal,
       };
-      guardEncodedProviderRequest(this.resolvedProfile, { ...transportRequest, signal: undefined });
+      guardEncodedProviderRequest(this.resolvedProfile, { ...transportRequest, signal: undefined }, request);
       const source = await guard.wait(this.transport(transportRequest));
       for await (const chunk of guard.iterate(source)) {
         if (!isRecord(chunk) || !Array.isArray(chunk.choices)) throw new ProtocolError();
