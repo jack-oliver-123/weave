@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
-import { generateKeyPairSync } from 'node:crypto';
+import { createHash, createPrivateKey, generateKeyPairSync, sign } from 'node:crypto';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
-import { release, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
@@ -12,7 +12,7 @@ const trusted = signingMaterial('trusted-key');
 const facts = {
   platform: 'win32' as const,
   productName: 'Windows 11 Pro',
-  build: Number.parseInt(release().split('.')[2] ?? '', 10),
+  build: 26_100,
   featureState: 'enabled' as const,
 };
 
@@ -64,7 +64,42 @@ async function generate(capabilities: string, probes: string, material = trusted
       WEAVE_CERTIFICATION_SIGNING_KEY: material.privateKey,
     },
   });
+  await rewriteAsWindowsEvidence(directory, material);
   return directory;
+}
+
+async function rewriteAsWindowsEvidence(directory: string, material: ReturnType<typeof signingMaterial>): Promise<void> {
+  const path = join(directory, 'artifacts', 'certification', 'windows-sandbox.json');
+  const generated = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
+  const unsigned: Record<string, unknown> = {
+    ...generated,
+    os: { platform: 'win32', release: `10.0.${facts.build}`, version: 'Windows 11 Pro' },
+  };
+  delete unsigned.evidenceDigest;
+  delete unsigned.signature;
+  const canonical = canonicalJson(unsigned);
+  const privateKey = createPrivateKey({
+    key: Buffer.from(material.privateKey, 'base64url'), format: 'der', type: 'pkcs8',
+  });
+  const evidence = {
+    ...unsigned,
+    evidenceDigest: createHash('sha256').update(canonical).digest('base64url'),
+    signature: {
+      algorithm: 'ed25519',
+      keyId: material.keyId,
+      value: sign(null, Buffer.from(`weave-certification-signature:v1\0${canonical}`, 'utf8'), privateKey).toString('base64url'),
+    },
+  };
+  await writeFile(path, `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function signingMaterial(keyId: string) {

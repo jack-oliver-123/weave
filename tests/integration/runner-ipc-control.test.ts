@@ -139,10 +139,16 @@ describe('Runner IPC control plane', () => {
       nonce: 'nonce-1', issuedAt: now, expiresAt: now + 30_000,
     });
     const execution = task.execute({ ticket, call }, new AbortController().signal);
+    const executionOutcome = execution.then(
+      () => ({ status: 'fulfilled' as const }),
+      (error: unknown) => ({ status: 'rejected' as const, error }),
+    );
     await backend.task.workerOpened;
     await control.dispose();
 
-    await expect(execution).rejects.toMatchObject({ code: 'RUNNER_CONTROL_CHANNEL_LOST' });
+    await expect(executionOutcome).resolves.toMatchObject({
+      status: 'rejected', error: { code: 'RUNNER_CONTROL_CHANNEL_LOST' },
+    });
     await vi.waitFor(() => {
       expect(backend.task.workerAborted).toBe(true);
       expect(backend.task.closeReasons).toContain('security_integrity_failure');
