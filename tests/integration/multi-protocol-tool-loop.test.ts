@@ -1,22 +1,15 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedProfile } from '../../src/config/index.js';
 import { ConversationManager } from '../../src/engine/conversation-manager.js';
 import { AnthropicMessagesClient } from '../../src/engine/llm/anthropic.js';
 import { OpenAIChatCompletionsClient } from '../../src/engine/llm/openai-chat.js';
 import { OpenAIResponsesClient } from '../../src/engine/llm/openai-responses.js';
 import { InMemoryConversationStore } from '../../src/memory/conversation-store.js';
-import type { LlmClient, TurnEvent } from '../../src/shared/types.js';
-import { createCoreToolRegistry } from '../../src/tool/core-tools.js';
-import { registryDispatcher } from '../../src/tool/registry.js';
-import { ToolCallScheduler } from '../../src/tool/scheduler.js';
-import { Workspace } from '../../src/tool/workspace.js';
+import { linuxReadToolDefinitions } from '../../src/runner/linux-backend.js';
+import type { LlmClient, ToolExecutor, TurnEvent } from '../../src/shared/types.js';
 import { nativeStream } from '../unit/engine/helpers.js';
+import { createTestActionGateway } from '../fixtures/test-action-gateway.js';
 
-const roots: string[] = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
 describe('三协议工具闭环', () => {
   it('Anthropic: definitions -> tool_use -> tool_result -> final text', async () => {
@@ -78,23 +71,39 @@ describe('三协议工具闭环', () => {
 });
 
 async function verifyLoop(client: LlmClient, transport: ReturnType<typeof vi.fn>): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), 'weave-protocol-loop-'));
-  roots.push(root);
-  await writeFile(join(root, 'input.txt'), 'hello', 'utf8');
-  const registry = createCoreToolRegistry(await Workspace.create(root));
+  const definitions = linuxReadToolDefinitions();
+  let created = false;
+  const executor: ToolExecutor = {
+    definitions: (scope) => scope === 'none' ? [] : definitions,
+    execute: async (calls, _signal, previousCalls = 0) => ({
+      results: calls.map((call) => {
+        const missing = call.name === 'read_file' && (call.input as { path?: string }).path === 'missing.txt';
+        if (call.name === 'create_file') created = true;
+        return {
+          callId: call.callId, providerCallId: call.providerCallId, toolName: call.name, isError: missing,
+          content: missing
+            ? { summary: 'not found', error: { code: 'NOT_FOUND', message: 'not found', retryable: false } }
+            : { summary: 'completed', data: { content: created ? 'created' : 'hello' } },
+        };
+      }),
+      totalCalls: previousCalls + calls.length,
+      businessToolLimitReached: false,
+    }),
+  };
   const store = new InMemoryConversationStore();
   const manager = new ConversationManager(client, store, {
     maxTokens: 100,
-    tools: { definitions: registry.listDefinitions(), scheduler: new ToolCallScheduler(registryDispatcher(registry)) },
+    actionGateway: createTestActionGateway(client, executor),
+    availableTools: definitions,
   });
   const events = await collect(manager.submit({ mode: 'react', content: '读取、创建并复查文件' }));
   expect(events.at(-1)).toMatchObject({
     type: 'turn_complete', modelTurnCount: 2, toolCallCount: 4, toolErrorCount: 1,
   });
   expect(events.filter((event) => event.type === 'tool_call_complete')).toHaveLength(4);
-  expect(await readFile(join(root, 'created.txt'), 'utf8')).toBe('created');
+  expect(created).toBe(true);
   expect(transport).toHaveBeenCalledTimes(2);
-  expect(store.getMessages().map((message) => message.role)).toEqual(['user', 'assistant', 'tool', 'assistant']);
+  expect(store.getMessages().map((message) => message.role)).toEqual(['user', 'assistant']);
 }
 
 function commonCalls() {

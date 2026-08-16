@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type {
-  AgentEvent, AgentTaskMode, ChatMessage, EnvironmentContext, LlmClient, LlmRequest, LlmStreamEvent, Plan, PromptMode, RunOutcome,
-  PromptCompletionAudit, RunProgressSummary, TokenUsage, ToolCallRequest, ToolCallResult, ToolExecutor,
+  AgentEvent, AgentTaskMode, Plan, PromptMode, RunOutcome,
+  PromptCompletionAudit, RunProgressSummary, SafeError, TokenUsage, ToolCallRequest, ToolCallResult,
 } from '../shared/types.js';
+import type { ActionModelExchangeResponse, ActionTask, SafeProposalAction } from '../security/index.js';
+import { PermissionCancelledError, SecurityIntegrityFailureError } from '../security/index.js';
 import { ControlToolCatalog, planFromSubmission, type AgentPhase, type SubmittedPlanInput } from './control-tools.js';
 import { blockedDependency, nextExecutableStep, reconcilePlan, updateStep, validateCriteria, validatePlanCompletion, validatePlanSubmission, PlanValidationError } from './plan.js';
-import { assemblePrompt, buildPromptCompletionAudit } from './prompt-assembly.js';
 import { buildRuntimeState } from './prompt-builder.js';
-import { createEnvironmentContext } from './prompt-environment.js';
 import { CONTROL_DECISION_CHECKPOINT } from './prompt-rules.js';
 
 const REACT_LIMIT = 10;
@@ -22,7 +22,6 @@ export interface AgentRunInput {
   readonly runId?: string;
   readonly kind: AgentRunKind;
   readonly task: string;
-  readonly messages: readonly ChatMessage[];
   readonly signal: AbortSignal;
   readonly plan?: Plan;
   readonly progress?: RunProgressSummary;
@@ -32,12 +31,6 @@ export interface AgentRunInput {
   readonly now?: () => number;
 }
 
-interface ModelResponse {
-  readonly text: string;
-  readonly calls: readonly ToolCallRequest[];
-  readonly completion: Extract<LlmStreamEvent, { type: 'stream_complete' }>;
-  readonly audit: PromptCompletionAudit;
-}
 interface Stats {
   iterations: number;
   toolCalls: number;
@@ -53,12 +46,7 @@ interface Stats {
 export class AgentLoop {
   private readonly controls = new ControlToolCatalog();
 
-  constructor(
-    private readonly client: LlmClient,
-    private readonly tools: ToolExecutor,
-    private readonly maxTokens: number,
-    private readonly environment: EnvironmentContext = createEnvironmentContext(process.cwd()),
-  ) {}
+  constructor(private readonly actionTask: ActionTask) {}
 
   async *run(input: AgentRunInput): AsyncGenerator<AgentEvent> {
     const runId = input.runId ?? input.createRunId?.() ?? randomUUID();
@@ -72,9 +60,6 @@ export class AgentLoop {
       sideEffects: [...(input.progress?.sideEffects ?? [])],
       ...(input.progress?.lastError === undefined ? {} : { lastError: input.progress.lastError }),
     };
-    const lastMessage = input.messages.at(-1);
-    const alreadyContainsTask = lastMessage?.role === 'user' && lastMessage.content === input.task;
-    const history: ChatMessage[] = [...input.messages, ...(alreadyContainsTask ? [] : [{ role: 'user' as const, content: input.task }])];
     let plan = input.plan;
     let lastFingerprint: string | undefined;
     let repeats = 0;
@@ -124,24 +109,19 @@ export class AgentLoop {
         const phase = phaseFor(input.kind, plan);
         const scope = input.kind === 'plan_draft' ? 'read_only' : stats.toolCalls >= 100 || phase === 'plan_finalize' ? 'none' : 'all';
         const promptMode: PromptMode = input.kind === 'react' ? 'react' : input.kind === 'plan_draft' ? 'plan_draft' : phase === 'plan_finalize' ? 'plan_finalize' : 'plan_execute';
-        const businessDefinitions = this.tools.definitions(scope);
+        const businessDefinitions = this.actionTask.definitions(scope);
         const definitions = [...businessDefinitions, ...this.controls.definitions(phase)];
-        const prompt = assemblePrompt({
-          runtime: buildRuntimeState({ mode: promptMode, iterationLimit: input.kind === 'plan_execute' ? STEP_LIMIT : REACT_LIMIT,
-            ...(plan === undefined ? {} : { plan }), ...(step === undefined ? {} : { step }),
-            ...(protocolCorrection === undefined ? {} : { protocolCorrection }) }),
-          environment: this.environment,
-          tools: definitions,
-          messages: [...history],
-        });
-        const response = await this.collect({ prompt, maxTokens: this.maxTokens, signal: input.signal });
+        const response = await this.collect(runId, iteration, buildRuntimeState({
+          mode: promptMode,
+          iterationLimit: input.kind === 'plan_execute' ? STEP_LIMIT : REACT_LIMIT,
+          ...(plan === undefined ? {} : { plan }),
+          ...(step === undefined ? {} : { step }),
+          ...(protocolCorrection === undefined ? {} : { protocolCorrection }),
+        }), definitions, input.signal);
         stats.usage = addUsage(stats.usage, response.completion.usage);
         stats.promptAudits.push(response.audit);
-        const blocks = [...(response.text === '' ? [] : [{ type: 'text' as const, text: response.text }]),
-          ...response.calls.map((call) => ({ type: 'tool_call' as const, call }))];
-        if (blocks.length > 0) history.push({ role: 'assistant', content: blocks });
 
-        if (response.calls.length === 0) {
+        if (response.proposalBatch === undefined) {
           const code = 'CONTROL_TOOL_REQUIRED';
           stats.lastError = '模型未使用控制工具推进任务。';
           protocolCorrection = '普通文本不能结束任务，请调用当前阶段允许的控制工具。';
@@ -156,42 +136,22 @@ export class AgentLoop {
         }
         protocolCorrection = undefined;
 
-        const controls = response.calls.filter((call) => this.controls.isControlTool(call.name));
-        const business = response.calls.filter((call) => !this.controls.isControlTool(call.name));
-        if (controls.length > 0 && (business.length > 0 || controls.length !== 1)) {
-          stats.lastError = '业务工具与控制工具不得混用，且一次只能调用一个控制工具。';
-          const errors = response.calls.map((call) => errorResult(call, 'MIXED_CONTROL_CALLS', '业务工具与控制工具不得混用，且一次只能调用一个控制工具。'));
-          history.push(toolMessage(errors));
-          ({ lastFingerprint, repeats } = repeat(lastFingerprint, repeats, fingerprint(['control', response.calls.map(stableCall), 'MIXED_CONTROL_CALLS'])));
-          yield iterationDone(input.taskId, runId, iteration, step?.id);
-          if (repeats >= 3) {
-            const reason = '模型连续三次违反控制工具协议。'; stats.lastError = reason;
-            const failed = failActiveStep(reason); if (failed !== undefined) yield failed;
-            yield stop(input.taskId, runId, outcome('abnormal', reason)); return;
-          }
-          continue;
-        }
-
-        if (business.length > 0) {
-          if (business.length > 32) {
-            stats.lastError = '单个模型响应最多允许 32 个业务工具调用。';
-            const errors = business.map((call) => errorResult(call, 'TOOL_BATCH_LIMIT_EXCEEDED', '单个模型响应最多允许 32 个业务工具调用。'));
-            history.push(toolMessage(errors));
-            ({ lastFingerprint, repeats } = repeat(lastFingerprint, repeats, fingerprint(['control', 'TOOL_BATCH_LIMIT_EXCEEDED'])));
-            yield iterationDone(input.taskId, runId, iteration, step?.id);
-            if (repeats >= 3) {
-              const reason = '模型连续三次超过单响应业务工具调用上限。'; stats.lastError = reason;
-              const failed = failActiveStep(reason); if (failed !== undefined) yield failed;
-              yield stop(input.taskId, runId, outcome('abnormal', reason)); return;
-            }
-            continue;
-          }
-          for (const call of business) yield { type: 'tool_call_queued', taskId: input.taskId, runId, iteration, callId: call.callId, toolName: call.name, call, ...(step === undefined ? {} : { stepId: step.id }) };
-          const started: ToolCallRequest[] = [];
+        const proposal = response.proposalBatch;
+        const actionRequest = this.actionTask.prepareActionBatch(runId, proposal.proposalBatchRef);
+        const businessActions = proposal.actions.filter((action) => action.kind === 'business');
+        const controlActions = proposal.actions.filter((action) => action.kind === 'control');
+        if (businessActions.length > 0) {
+          for (const action of businessActions) yield { type: 'tool_call_queued', taskId: input.taskId, runId, iteration, callId: action.callId, toolName: action.toolName, ...(step === undefined ? {} : { stepId: step.id }) };
+          const started: Pick<SafeProposalAction, 'callId' | 'toolName'>[] = [];
+          const authorizationRequests: import('../shared/types.js').AuthorizationRequestView[] = [];
           let wake: (() => void) | undefined;
           let executionComplete = false;
-          const batchPromise = this.tools.execute(business, input.signal, stats.toolCalls, { onStart: (call) => {
-            started.push(call);
+          const outcomePromise = this.actionTask.performActionBatch(actionRequest, input.signal, stats.toolCalls, { onStart: (action) => {
+            started.push(action);
+            wake?.();
+            wake = undefined;
+          }, onAuthorizationRequested: (request) => {
+            authorizationRequests.push(request);
             wake?.();
             wake = undefined;
           } }).finally(() => {
@@ -199,14 +159,31 @@ export class AgentLoop {
             wake?.();
             wake = undefined;
           });
-          while (!executionComplete || started.length > 0) {
+          while (!executionComplete || started.length > 0 || authorizationRequests.length > 0) {
+            while (authorizationRequests.length > 0) {
+              const request = authorizationRequests.shift()!;
+              yield { type: 'authorization_requested', taskId: input.taskId, runId, request };
+            }
             while (started.length > 0) {
-              const call = started.shift()!;
-              yield { type: 'tool_call_started', taskId: input.taskId, runId, iteration, callId: call.callId, toolName: call.name, ...(step === undefined ? {} : { stepId: step.id }) };
+              const action = started.shift()!;
+              yield { type: 'tool_call_started', taskId: input.taskId, runId, iteration, callId: action.callId, toolName: action.toolName, ...(step === undefined ? {} : { stepId: step.id }) };
             }
             if (!executionComplete) await new Promise<void>((resolve) => { wake = resolve; });
           }
-          const batch = await batchPromise;
+          const actionOutcome = await outcomePromise;
+          if (actionOutcome.kind === 'invalid') {
+            stats.toolErrors += actionOutcome.results.length;
+            stats.lastError = actionOutcome.results.at(-1)?.content.summary;
+            ({ lastFingerprint, repeats } = repeat(lastFingerprint, repeats, fingerprint(['invalid', actionOutcome.results.map(stableResult)])));
+            yield iterationDone(input.taskId, runId, iteration, step?.id);
+            if (repeats >= 3) {
+              const reason = '模型连续三次提交无效工具批次。';
+              yield stop(input.taskId, runId, outcome('abnormal', reason)); return;
+            }
+            continue;
+          }
+          if (actionOutcome.kind !== 'business') throw new Error('ACTION_BATCH_KIND_MISMATCH');
+          const batch = actionOutcome.batch;
           stats.toolCalls = batch.totalCalls; stats.toolErrors += batch.results.filter((item) => item.isError).length;
           const executionModes = new Map(businessDefinitions.map((definition) => [definition.name, definition.executionMode]));
           for (const item of batch.results) {
@@ -219,9 +196,8 @@ export class AgentLoop {
             const skipped = ['PRIOR_WRITE_FAILED', 'TURN_CANCELLED', 'TOOL_CALL_LIMIT_REACHED'].includes(item.content.error?.code ?? '');
             yield { type: skipped ? 'tool_call_skipped' : 'tool_call_completed', taskId: input.taskId, runId, iteration, callId: item.callId, toolName: item.toolName, result: item, ...(step === undefined ? {} : { stepId: step.id }) };
           }
-          history.push(toolMessage(batch.results));
           protocolCorrection = CONTROL_DECISION_CHECKPOINT;
-          ({ lastFingerprint, repeats } = repeat(lastFingerprint, repeats, fingerprint(['business', business.map(stableCall), batch.results.map(stableResult)])));
+          ({ lastFingerprint, repeats } = repeat(lastFingerprint, repeats, fingerprint(['business', businessActions.map((action) => action.actionDigest), batch.results.map(stableResult)])));
           yield iterationDone(input.taskId, runId, iteration, step?.id);
           if (repeats >= 3) {
             const reason = '连续三次执行相同工具批次并得到等价结果。'; stats.lastError = reason;
@@ -231,11 +207,21 @@ export class AgentLoop {
           continue;
         }
 
-        const call = controls[0]!;
+        const actionOutcome = await this.actionTask.performActionBatch(actionRequest, input.signal, stats.toolCalls);
+        if (actionOutcome.kind === 'invalid') {
+          stats.toolErrors += actionOutcome.results.length;
+          stats.lastError = actionOutcome.results.at(-1)?.content.summary;
+          ({ lastFingerprint, repeats } = repeat(lastFingerprint, repeats, fingerprint(['invalid', actionOutcome.results.map(stableResult)])));
+          yield iterationDone(input.taskId, runId, iteration, step?.id);
+          continue;
+        }
+        if (actionOutcome.kind !== 'control' || controlActions.length !== 1 || actionOutcome.calls.length !== 1) throw new Error('ACTION_BATCH_KIND_MISMATCH');
+        const call = actionOutcome.calls[0]!;
         const validated = this.controls.validate(call, phase);
         if (!validated.ok) {
           stats.lastError = validated.error.message;
-          const error = errorResult(call, validated.error.code, validated.error.message); history.push(toolMessage([error]));
+          const error = errorResult(call, validated.error.code, validated.error.message);
+          await this.actionTask.appendResults([error], runId, {}, input.signal);
           ({ lastFingerprint, repeats } = repeat(lastFingerprint, repeats, fingerprint(['control', stableCall(call), validated.error.code])));
           yield iterationDone(input.taskId, runId, iteration, step?.id);
           if (repeats >= 3) {
@@ -267,22 +253,22 @@ export class AgentLoop {
             yield { type: 'plan_submitted', taskId: input.taskId, runId, plan };
             yield iterationDone(input.taskId, runId, iteration);
             yield stop(input.taskId, runId, outcome('completed', '计划已生成，等待用户确认。')); return;
-          } catch (error) { stats.lastError = safeMessage(error); ({ lastFingerprint, repeats } = this.feedback(history, call, error, lastFingerprint, repeats)); yield iterationDone(input.taskId, runId, iteration); continue; }
+          } catch (error) { stats.lastError = safeMessage(error); ({ lastFingerprint, repeats } = await this.feedback(call, error, lastFingerprint, repeats, runId, input.signal)); yield iterationDone(input.taskId, runId, iteration); continue; }
         }
         if (validated.name === 'complete_step') {
           try {
             if (plan === undefined || step === undefined || control.stepId !== step.id) throw new PlanValidationError('STALE_PLAN_STEP', '只能完成当前步骤。');
             const evidence = validateCriteria(step.successCriteria, control.criteria);
             plan = updateStep(plan, step.id, { status: 'completed', evidence, statusReason: undefined });
-            history.push(toolMessage([controlSuccess(call, `步骤 ${step.id} 已完成。`)]));
+            await this.actionTask.appendResults([controlSuccess(call, `步骤 ${step.id} 已完成。`)], runId, {}, input.signal);
             yield { type: 'plan_step_completed', taskId: input.taskId, runId, planId: plan.planId, version: plan.version, stepId: step.id, evidence };
             lastFingerprint = undefined; repeats = 0; yield iterationDone(input.taskId, runId, iteration, step.id); continue;
-          } catch (error) { stats.lastError = safeMessage(error); ({ lastFingerprint, repeats } = this.feedback(history, call, error, lastFingerprint, repeats)); yield iterationDone(input.taskId, runId, iteration, step?.id); continue; }
+          } catch (error) { stats.lastError = safeMessage(error); ({ lastFingerprint, repeats } = await this.feedback(call, error, lastFingerprint, repeats, runId, input.signal)); yield iterationDone(input.taskId, runId, iteration, step?.id); continue; }
         }
         if (validated.name === 'skip_step') {
-          if (plan === undefined || step === undefined || control.stepId !== step.id) { ({ lastFingerprint, repeats } = this.feedback(history, call, new PlanValidationError('STALE_PLAN_STEP', '只能跳过当前步骤。'), lastFingerprint, repeats)); yield iterationDone(input.taskId, runId, iteration, step?.id); continue; }
+          if (plan === undefined || step === undefined || control.stepId !== step.id) { ({ lastFingerprint, repeats } = await this.feedback(call, new PlanValidationError('STALE_PLAN_STEP', '只能跳过当前步骤。'), lastFingerprint, repeats, runId, input.signal)); yield iterationDone(input.taskId, runId, iteration, step?.id); continue; }
           const reason = control.reason as string; plan = updateStep(plan, step.id, { status: 'skipped', statusReason: reason });
-          history.push(toolMessage([controlSuccess(call, `步骤 ${step.id} 已跳过。`)]));
+          await this.actionTask.appendResults([controlSuccess(call, `步骤 ${step.id} 已跳过。`)], runId, {}, input.signal);
           yield { type: 'plan_step_skipped', taskId: input.taskId, runId, planId: plan.planId, version: plan.version, stepId: step.id, reason };
           yield iterationDone(input.taskId, runId, iteration, step.id); continue;
         }
@@ -291,7 +277,7 @@ export class AgentLoop {
             if (input.kind === 'plan_execute') validatePlanCompletion(plan!, control.criteria);
             yield iterationDone(input.taskId, runId, iteration, step?.id);
             yield stop(input.taskId, runId, { ...outcome('completed', '任务已完成。'), result: control.result as string, verificationSummary: control.verificationSummary as string }); return;
-          } catch (error) { stats.lastError = safeMessage(error); ({ lastFingerprint, repeats } = this.feedback(history, call, error, lastFingerprint, repeats)); yield iterationDone(input.taskId, runId, iteration, step?.id); }
+          } catch (error) { stats.lastError = safeMessage(error); ({ lastFingerprint, repeats } = await this.feedback(call, error, lastFingerprint, repeats, runId, input.signal)); yield iterationDone(input.taskId, runId, iteration, step?.id); }
         }
         if (repeats >= 3) {
           const reason = '控制工具连续三次返回相同校验错误。'; stats.lastError = reason;
@@ -300,32 +286,53 @@ export class AgentLoop {
         }
       }
     } catch (error) {
-      const cancelled = input.signal.aborted;
+      const cancelled = input.signal.aborted || error instanceof PermissionCancelledError;
       const message = cancelled ? '用户取消了当前运行。' : safeMessage(error);
       if (!cancelled) stats.lastError = message;
       const failed = cancelled ? undefined : failActiveStep(message);
       if (failed !== undefined) yield failed;
-      const stopped = outcome(cancelled ? 'cancelled' : 'abnormal', message);
-      yield stop(input.taskId, runId, cancelled || !(error instanceof ModelStreamError) ? stopped : { ...stopped, error: error.safeError });
+      const integrityFailure = error instanceof SecurityIntegrityFailureError;
+      const baseStopped = outcome(cancelled ? 'cancelled' : integrityFailure ? 'security_integrity_failure' : 'abnormal', message);
+      const stopped = integrityFailure
+        ? { ...baseStopped, effectsMayHaveOccurred: error.effectsMayHaveOccurred }
+        : baseStopped;
+      const safeError = modelExchangeSafeError(error);
+      const integrityError = integrityFailure ? { code: error.code, message: error.message, retryable: false } : undefined;
+      yield stop(input.taskId, runId, cancelled || (safeError === undefined && integrityError === undefined)
+        ? stopped
+        : { ...stopped, error: integrityError ?? safeError });
     }
   }
 
-  private feedback(history: ChatMessage[], call: ToolCallRequest, error: unknown, previous: string | undefined, count: number) {
+  private async feedback(
+    call: ToolCallRequest,
+    error: unknown,
+    previous: string | undefined,
+    count: number,
+    runId: string,
+    signal: AbortSignal,
+  ) {
     const failure = error instanceof PlanValidationError ? error : new PlanValidationError('INVALID_CONTROL_INPUT', '控制工具输入无效。');
-    history.push(toolMessage([errorResult(call, failure.code, failure.message)]));
+    await this.actionTask.appendResults([errorResult(call, failure.code, failure.message)], runId, {}, signal);
     return repeat(previous, count, fingerprint(['control', stableCall(call), failure.code]));
   }
 
-  private async collect(request: LlmRequest): Promise<ModelResponse> {
-    let text = ''; let calls: readonly ToolCallRequest[] = []; let completion: ModelResponse['completion'] | undefined;
-    for await (const event of this.client.stream(request)) {
-      if (event.type === 'text_delta') text += event.delta;
-      else if (event.type === 'tool_calls') { if (calls.length > 0) throw new Error('模型重复提交工具调用集合。'); calls = event.calls; }
-      else if (event.type === 'stream_error') throw new ModelStreamError(event.error);
-      else if (event.type === 'stream_complete') completion = event;
-    }
-    if (completion === undefined) throw new Error('模型响应未正常结束。');
-    return { text, calls, completion, audit: buildPromptCompletionAudit(request.prompt.audit, this.client.profile, completion.usage) };
+  private collect(
+    runId: string,
+    iteration: number,
+    runtime: import('../shared/types.js').RuntimeStateContext,
+    tools: readonly import('../shared/types.js').ToolDefinition[],
+    signal: AbortSignal,
+  ): Promise<ActionModelExchangeResponse> {
+    const businessNames = new Set(this.actionTask.definitions('all').map((tool) => tool.name));
+    const request = this.actionTask.prepareModelExchange({
+      runId,
+      iteration,
+      runtime,
+      businessTools: tools.filter((tool) => businessNames.has(tool.name)),
+      controlTools: tools.filter((tool) => !businessNames.has(tool.name)),
+    });
+    return this.actionTask.performModelExchange(request, signal);
   }
 }
 
@@ -356,7 +363,6 @@ function result(reason: RunOutcome['reason'], stats: Stats, summary: string, pla
 }
 function stop(taskId: string, runId: string, outcome: RunOutcome): AgentEvent { return { type: 'run_stopped', taskId, runId, outcome }; }
 function iterationDone(taskId: string, runId: string, iteration: number, stepId?: string): AgentEvent { return { type: 'iteration_completed', taskId, runId, iteration, ...(stepId === undefined ? {} : { stepId }) }; }
-function toolMessage(results: readonly ToolCallResult[]): ChatMessage { return { role: 'tool', content: results.map((item) => ({ type: 'tool_result', result: item })) }; }
 function errorResult(call: ToolCallRequest | undefined, code: string, message: string): ToolCallResult { return { callId: call?.callId ?? `control-${code}`, providerCallId: call?.providerCallId ?? `control-${code}`, toolName: call?.name ?? 'agent_control', isError: true, content: { summary: message, error: { code, message, retryable: false } } }; }
 function controlSuccess(call: ToolCallRequest, summary: string): ToolCallResult { return { callId: call.callId, providerCallId: call.providerCallId, toolName: call.name, isError: false, content: { summary } }; }
 function repeat(previous: string | undefined, count: number, current: string) { return { lastFingerprint: current, repeats: previous === current ? count + 1 : 1 }; }
@@ -381,9 +387,12 @@ function addUsage(current: TokenUsage | undefined, next: TokenUsage | undefined)
 function safeMessage(error: unknown): string { return error instanceof Error ? error.message : 'AgentLoop 运行时发生内部错误。'; }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 
-class ModelStreamError extends Error {
-  constructor(readonly safeError: import('../shared/types.js').SafeError) {
-    super(safeError.message);
-    this.name = 'ModelStreamError';
-  }
+function modelExchangeSafeError(error: unknown): SafeError | undefined {
+  if (typeof error !== 'object' || error === null || !('safeError' in error)) return undefined;
+  const value = (error as { safeError?: unknown }).safeError;
+  if (typeof value !== 'object' || value === null) return undefined;
+  const candidate = value as Partial<SafeError>;
+  return typeof candidate.code === 'string' && typeof candidate.message === 'string' && typeof candidate.retryable === 'boolean'
+    ? { code: candidate.code, message: candidate.message, retryable: candidate.retryable }
+    : undefined;
 }

@@ -97,10 +97,17 @@ Implement tasks from an OpenSpec change.
    - Mark task complete in the tasks file: `- [ ]` → `- [x]`
    - Continue to next task
 
+   **External issue trackers:**
+   - Follow the implementation order in the OpenSpec tasks artifact.
+   - Keep external Issue trackers read-only during Apply unless the user separately authorizes a remote operation.
+   - Determine local readiness from OpenSpec task ordering, required artifacts, and relevant local checks. Issue state, dependency labels, and milestones remain collaboration metadata.
+   - Continue when preceding OpenSpec tasks and local checks pass, regardless of the corresponding Issue state.
+   - Report unmet environment prerequisites in the local Apply result. Pause only when the implementation itself cannot proceed, such as a missing required artifact, unavailable dependency, unresolved design decision, or prerequisite that cannot be fixed within scope.
+
    **Pause if:**
    - Task is unclear → ask for clarification
    - Implementation reveals a design issue → suggest updating artifacts
-   - Error or blocker encountered → report and wait for guidance
+   - An implementation error remains after in-scope recovery attempts → report and wait for guidance
    - User interrupts
 
 7. **On completion or pause, show status**
@@ -163,13 +170,14 @@ What would you like to do?
 ```
 
 **Guardrails**
-- Keep going through tasks until done or blocked
+- Keep going through tasks until done or the implementation cannot proceed
+- Do not infer a local implementation dependency from external Issue status
 - Always read context files before starting (from the apply instructions output)
 - If task is ambiguous, pause and ask before implementing
 - If implementation reveals issues, pause and suggest artifact updates
 - Keep code changes minimal and scoped to each task
 - Update task checkbox immediately after completing each task
-- Pause on errors, blockers, or unclear requirements - don't guess
+- Pause on unrecoverable errors or unclear requirements - don't guess
 - Use contextFiles from CLI output, don't assume specific file names
 - Do not use context or operation guidance as proof that a task is complete
 - Apply relevant project context; report conflicts with controlling workflow inputs

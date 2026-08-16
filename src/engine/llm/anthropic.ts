@@ -1,11 +1,13 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { randomUUID } from 'node:crypto';
 import type { ResolvedProfile } from '../../config/index.js';
+import type { ProviderCredentialBroker } from '../../security/index.js';
 import type { FinishReason, LlmClient, LlmRequest, LlmStreamEvent, TokenUsage } from '../../shared/types.js';
-import { isRecord, mapClientError, ProtocolError, readNumber, readRecord, readString } from './errors.js';
+import { mapClientError, ProtocolError, readNumber, readRecord, readString } from './errors.js';
 import { DISABLED_THINKING, type DisabledThinking } from './request-extensions.js';
 import { StreamCancelledError, StreamGuard } from './stream-guard.js';
 import { appendToolArguments, encodeAnthropicRequest, parseToolArguments } from './tool-codecs.js';
+import { guardEncodedProviderRequest } from './final-input-guard.js';
 
 interface AnthropicTransportRequest {
   readonly model: string;
@@ -26,6 +28,7 @@ export interface AnthropicClientOptions {
   readonly timeoutMs?: number;
   readonly transport?: AnthropicTransport;
   readonly createCallId?: () => string;
+  readonly credentialBroker?: ProviderCredentialBroker;
 }
 
 type ActiveAnthropicBlock =
@@ -38,11 +41,13 @@ export class AnthropicMessagesClient implements LlmClient {
   private readonly transport: AnthropicTransport;
   private readonly createCallId: () => string;
   private readonly explicitPromptCaching: boolean;
+  private readonly resolvedProfile: ResolvedProfile;
 
   constructor(profile: ResolvedProfile, options: AnthropicClientOptions = {}) {
     this.profile = { name: profile.name, protocol: profile.protocol, model: profile.model };
+    this.resolvedProfile = profile;
     this.timeoutMs = options.timeoutMs ?? 120_000;
-    this.transport = options.transport ?? createSdkTransport(profile);
+    this.transport = options.transport ?? createSdkTransport(profile, options.credentialBroker);
     this.createCallId = options.createCallId ?? randomUUID;
     this.explicitPromptCaching = isOfficialAnthropicEndpoint(profile.baseUrl);
   }
@@ -63,7 +68,7 @@ export class AnthropicMessagesClient implements LlmClient {
 
     try {
       const encoded = encodeAnthropicRequest(request.prompt, this.explicitPromptCaching);
-      const source = await guard.wait(this.transport({
+      const transportRequest = {
         model: this.profile.model,
         messages: encoded.messages,
         maxTokens: request.maxTokens,
@@ -71,7 +76,9 @@ export class AnthropicMessagesClient implements LlmClient {
         ...(encoded.tools === undefined ? {} : { tools: encoded.tools, toolChoice: encoded.toolChoice }),
         ...(encoded.system === undefined ? {} : { system: encoded.system }),
         signal: guard.signal,
-      }));
+      };
+      guardEncodedProviderRequest(this.resolvedProfile, { ...transportRequest, signal: undefined }, request);
+      const source = await guard.wait(this.transport(transportRequest));
       for await (const event of guard.iterate(source)) {
         const type = readString(event, 'type');
         if (type === 'ping' || (type !== undefined && !isAnthropicStateEvent(type))) {
@@ -171,8 +178,15 @@ export class AnthropicMessagesClient implements LlmClient {
   }
 }
 
-function createSdkTransport(profile: ResolvedProfile): AnthropicTransport {
-  const client = new Anthropic({ apiKey: profile.apiKey, baseURL: profile.baseUrl, maxRetries: 0 });
+function createSdkTransport(profile: ResolvedProfile, broker?: ProviderCredentialBroker): AnthropicTransport {
+  const client = new Anthropic({
+    apiKey: profile.apiKey ?? 'credential-managed', baseURL: profile.baseUrl, maxRetries: 0,
+    ...(broker === undefined || profile.credentialRef === undefined ? {} : {
+      fetch: ((input: string | URL | Request, init?: RequestInit) => broker.fetch(
+        profile.credentialRef!, new URL(profile.baseUrl).origin, 'anthropic-api-key', input, init,
+      )) as typeof fetch,
+    }),
+  });
   return ({ model, messages, maxTokens, thinking, tools, toolChoice, system, signal }) => client.messages.stream({
     model,
     max_tokens: maxTokens,

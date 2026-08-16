@@ -6,3 +6,4 @@ export { ToolCallLimitError, ToolCallScheduler } from './scheduler.js';
 export { SchedulerToolExecutor } from './executor.js';
 export { createCoreToolRegistry } from './core-tools.js';
 export { Workspace } from './workspace.js';
+export { REMEMBER_TOOL } from './memory-tool.js';

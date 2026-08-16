@@ -21,6 +21,17 @@ describe('CLI startup parsing', () => {
     expect(parseCliArgs(['--tools'])).toEqual({ action: 'run', toolsEnabled: true });
   });
 
+  it('parses credential management commands', () => {
+    expect(parseCliArgs(['credential', 'set', 'provider:test'])).toEqual({
+      action: 'credential', operation: 'set', reference: 'provider:test',
+    });
+    expect(parseCliArgs(['credential', 'delete', 'provider:test'])).toEqual({
+      action: 'credential', operation: 'delete', reference: 'provider:test',
+    });
+    expect(parseCliArgs(['credential', 'list'])).toEqual({ action: 'credential', operation: 'list' });
+    expect(() => parseCliArgs(['credential', 'set'])).toThrow(CliError);
+  });
+
   it('rejects conflicting tool switches', () => {
     expect(() => parseCliArgs(['--tools', '--no-tools'])).toThrowError('互斥');
   });

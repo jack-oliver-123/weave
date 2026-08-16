@@ -36,7 +36,7 @@ describe('OpenAIChatCompletionsClient', () => {
     ]);
     const sent = transport.mock.calls[0]?.[0];
     expect(sent).toMatchObject({ maxTokens: 321 });
-    expect(sent.messages.slice(0, 2).map((message: { role: string }) => message.role)).toEqual(['system', 'system']);
+    expect(sent.messages.slice(0, 2).map((message: { role: string }) => message.role)).toEqual(['system', 'user']);
     expect(sent).not.toHaveProperty('thinking');
   });
 
@@ -66,7 +66,8 @@ describe('OpenAIChatCompletionsClient', () => {
 
     const sent = transport.mock.calls[0]?.[0];
     expect(sent.messages.filter((message: { role: string }) => message.role === 'system')).toHaveLength(1);
-    expect(sent.messages[0].content).toContain('<system-reminder>');
+    expect(sent.messages[0].content).not.toContain('<system-reminder>');
+    expect(sent.messages[1].content).toContain('untrusted_context');
   });
 
   it('保留有文本拒答并映射为 refusal', async () => {

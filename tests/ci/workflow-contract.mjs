@@ -72,3 +72,4 @@ for (const forbidden of [
 }
 
 process.stdout.write('CI workflow contract is valid\n');
+await import('./certification-workflow-contract.mjs');

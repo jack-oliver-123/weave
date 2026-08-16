@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { Box, Text, useCursor } from 'ink';
-import type { ProfileSummary } from '../shared/types.js';
+import type { AuthorizationChoice, AuthorizationRequestView, ProfileSummary } from '../shared/types.js';
 import { prefixRows, wrapStyledSpans, type DisplayRow, type StyledSpan } from './display-row.js';
 import { displayWidth, truncateDisplay } from './display-width.js';
 import { composerViewport, calculateLayout } from './layout.js';
@@ -33,8 +33,11 @@ export function WeaveView(props: WeaveViewProps): React.JSX.Element {
   const contentWidth = Math.max(1, props.columns - 2);
   const layout = calculateLayout(props.rows, props.state.composer, props.columns, props.state.queuedMessages.length);
   const transcriptRows = useMemo(
-    () => props.transcriptRows ?? formatTranscript(props.state.transcript, contentWidth, now, props.state.taskDecision, props.state.selectedDecision),
-    [contentWidth, props.state.transcript, props.state.taskDecision, props.state.selectedDecision, props.transcriptRows, spinnerTick],
+    () => props.transcriptRows ?? formatTranscript(
+      props.state.transcript, contentWidth, now, props.state.taskDecision, props.state.selectedDecision,
+      props.state.pendingAuthorization, props.state.authorizationChoices, props.state.selectedAuthorizationItem,
+    ),
+    [contentWidth, props.state.transcript, props.state.taskDecision, props.state.selectedDecision, props.state.pendingAuthorization, props.state.authorizationChoices, props.state.selectedAuthorizationItem, props.transcriptRows, spinnerTick],
   );
   const visible = visibleViewportLines(transcriptRows, layout.transcriptHeight, props.viewport);
   const composer = composerViewport(
@@ -89,7 +92,16 @@ export function WeaveView(props: WeaveViewProps): React.JSX.Element {
   );
 }
 
-export function formatTranscript(turns: readonly TranscriptTurn[], width = 78, now = performance.now(), decision?: import('./task-input.js').TaskDecision, selectedDecision = 0): readonly DisplayRow[] {
+export function formatTranscript(
+  turns: readonly TranscriptTurn[],
+  width = 78,
+  now = performance.now(),
+  decision?: import('./task-input.js').TaskDecision,
+  selectedDecision = 0,
+  pendingAuthorization?: AuthorizationRequestView,
+  authorizationChoices: readonly AuthorizationChoice[] = [],
+  selectedAuthorizationItem = 0,
+): readonly DisplayRow[] {
   const rows: DisplayRow[] = [];
   for (const turn of turns) {
     rows.push(...wrapStyledSpans(
@@ -115,7 +127,18 @@ export function formatTranscript(turns: readonly TranscriptTurn[], width = 78, n
         }
         if (activity.type === 'task') {
           const stats = activity.runCount === undefined ? '' : ` · 累计 ${activity.runCount} 次运行 / ${activity.totalIterations ?? 0} 次迭代`;
-          rows.push({ key: `${turn.turnId}:task:${activityIndex}`, spans: [{ text: `  ${activity.summary}${stats}`, style: { color: 'yellow' } }] });
+          const effects = activity.effectsMayHaveOccurred ? ' · 外部效果可能已发生，结果未释放' : '';
+          rows.push({ key: `${turn.turnId}:task:${activityIndex}`, spans: [{ text: `  ${activity.summary}${effects}${stats}`, style: { color: 'yellow' } }] });
+          return;
+        }
+        if (activity.type === 'authorization') {
+          rows.push(...authorizationRows(
+            turn.turnId,
+            activity.request,
+            width,
+            pendingAuthorization?.authorizationRequestId === activity.request.authorizationRequestId ? authorizationChoices : undefined,
+            selectedAuthorizationItem,
+          ));
           return;
         }
         const answerRows = renderMarkdown(activity.text, {
@@ -148,6 +171,50 @@ export function formatTranscript(turns: readonly TranscriptTurn[], width = 78, n
       ...(index === decisionOptions(decision).length - 1 ? [] : [{ text: '   ' }]),
     ]) });
   }
+  return rows;
+}
+
+const AUTHORIZATION_CHOICES: readonly AuthorizationChoice[] = ['allow_once', 'allow_for_task', 'deny', 'cancel'];
+const AUTHORIZATION_LABELS: Readonly<Record<AuthorizationChoice, string>> = {
+  allow_once: '允许一次',
+  allow_for_task: '本任务允许',
+  deny: '拒绝',
+  cancel: '取消运行',
+};
+
+function authorizationRows(
+  turnId: string,
+  request: AuthorizationRequestView,
+  width: number,
+  choices: readonly AuthorizationChoice[] | undefined,
+  selectedItem: number,
+): readonly DisplayRow[] {
+  const rows: DisplayRow[] = [{
+    key: `${turnId}:authorization:${request.authorizationRequestId}:title`,
+    spans: [{ text: `  授权请求 · ${request.items.length} 项`, style: { bold: true, color: 'yellow' } }],
+  }];
+  request.items.forEach((item, index) => {
+    const resource = item.capabilityTypes.join(', ');
+    const risk = item.risks.length === 0 ? '普通' : item.risks.join(', ');
+    const destination = item.destination === undefined ? '' : ` · 目标 ${item.destination}`;
+    rows.push(...wrapStyledSpans(
+      [{ text: `${index + 1}. ${item.toolName} · ${item.summary} · 能力 ${resource} · 风险 ${risk}${destination}` }],
+      width,
+      `${turnId}:authorization:${request.authorizationRequestId}:${index}`,
+      [{ text: choices !== undefined && index === selectedItem ? '> ' : '  ', style: { color: 'yellow' } }],
+      [{ text: '  ' }],
+    ));
+    if (choices !== undefined) {
+      const selected = choices[index] ?? 'allow_once';
+      rows.push({
+        key: `${turnId}:authorization:${request.authorizationRequestId}:${index}:choice`,
+        spans: AUTHORIZATION_CHOICES.flatMap((choice, choiceIndex) => [
+          { text: `${choice === selected ? '[' : ' '}${AUTHORIZATION_LABELS[choice]}${choice === selected ? ']' : ' '}`, style: choice === selected ? { color: choice === 'deny' || choice === 'cancel' ? 'red' : 'cyan', bold: true } : { dimColor: true } },
+          ...(choiceIndex === AUTHORIZATION_CHOICES.length - 1 ? [] : [{ text: '  ' }]),
+        ]),
+      });
+    }
+  });
   return rows;
 }
 
@@ -253,15 +320,19 @@ function taskModeText(state: TuiState): string {
   if (display.mode === 'react') {
     if (display.phase === 'running') return 'ReAct · 运行中';
     if (display.phase === 'awaiting_input') return 'ReAct · 等待输入';
+    if (display.phase === 'awaiting_authorization') return 'ReAct · 等待授权';
     if (display.phase === 'stopped') return 'ReAct · 已停止';
     if (display.phase === 'cancelled') return 'ReAct · 已取消';
+    if (display.phase === 'security_integrity_failure') return 'ReAct · 安全完整性故障';
     return 'ReAct · 就绪';
   }
   if (display.phase === 'planning') return 'Plan · 规划中';
   if (display.phase === 'awaiting_approval') return 'Plan · 待确认';
   if (display.phase === 'awaiting_input') return 'Plan · 等待输入';
+  if (display.phase === 'awaiting_authorization') return 'Plan · 等待授权';
   if (display.phase === 'stopped') return 'Plan · 已停止';
   if (display.phase === 'cancelled') return 'Plan · 已取消';
+  if (display.phase === 'security_integrity_failure') return 'Plan · 安全完整性故障';
   if (display.currentStep !== undefined && display.totalSteps !== undefined) {
     return `Plan · 执行 ${display.currentStep}/${display.totalSteps}`;
   }

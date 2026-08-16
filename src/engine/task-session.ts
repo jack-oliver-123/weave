@@ -1,7 +1,7 @@
 import type { AgentStopReason, AgentTaskMode, Plan, RunOutcome, RunProgressSummary } from '../shared/types.js';
 import { PlanSession } from './plan-session.js';
 
-export type AgentTaskState = 'running' | 'awaiting_input' | 'awaiting_approval' | 'stopped' | 'cancelled' | 'completed' | 'exited';
+export type AgentTaskState = 'running' | 'awaiting_input' | 'awaiting_approval' | 'stopped' | 'cancelled' | 'security_integrity_failure' | 'completed' | 'exited';
 
 export interface PendingQuestion { readonly questionId: string; readonly prompt: string }
 
@@ -72,6 +72,7 @@ function taskStateFor(reason: AgentStopReason): AgentTaskState {
   if (reason === 'cancelled') return 'cancelled';
   if (reason === 'awaiting_input') return 'awaiting_input';
   if (reason === 'plan_revision') return 'awaiting_approval';
+  if (reason === 'security_integrity_failure') return 'security_integrity_failure';
   return 'stopped';
 }
 function invalid(code: string): TaskStateError { return new TaskStateError(code, '任务状态不允许该操作。'); }

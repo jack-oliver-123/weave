@@ -27,11 +27,12 @@ describe('ConversationManager', () => {
       expect.objectContaining({ taskId: 'task-1', runId: 'run-1', iteration: 1, phase: 'completed' }),
     ]);
     expect(second.every((event) => event.turnId === 'turn-2')).toBe(true);
-    expect(client.requests[1]?.prompt.messages.slice(0, 3)).toEqual([
-      { role: 'user', content: '第一问' },
-      { role: 'assistant', content: '答一\n\n验证：验证通过' },
-      { role: 'user', content: '第二问' },
-    ]);
+    const secondMessages = client.requests[1]?.prompt.messages ?? [];
+    expect(secondMessages.map((message) => message.role)).toEqual(['user', 'user', 'user', 'user']);
+    expect(JSON.stringify(secondMessages)).toContain('untrusted_context');
+    expect(JSON.stringify(secondMessages)).toContain('第一问');
+    expect(JSON.stringify(secondMessages)).toContain('答一');
+    expect(secondMessages.at(-1)).toEqual({ role: 'user', content: '第二问' });
     expect(second.at(-1)).toMatchObject({ type: 'turn_complete', modelTurnCount: 1, usage: { inputTokens: 3, outputTokens: 2 } });
   });
 
