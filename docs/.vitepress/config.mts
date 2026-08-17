@@ -6,6 +6,7 @@ const activeItems = [
 ];
 
 const archivedItems = [
+  { text: "align-engineering-skills-with-openspec", link: "/changes/archive/2026-08-17-align-engineering-skills-with-openspec/" },
   { text: "add-agent-permission-system", link: "/changes/archive/2026-08-15-add-agent-permission-system/" },
   { text: "add-production-prompt-assembly", link: "/changes/archive/2026-08-14-add-production-prompt-assembly/" },
   { text: "add-agent-loop-modes", link: "/changes/archive/2026-08-13-add-agent-loop-modes/" },

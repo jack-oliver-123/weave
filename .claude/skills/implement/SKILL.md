@@ -4,12 +4,16 @@ description: "Implement a piece of work based on a spec or set of tickets."
 disable-model-invocation: true
 ---
 
-Implement the work described by the user in the spec or tickets.
+Read `docs/agents/openspec-workflow.md` before implementation. It is the sole authority for classification, implementation, review, verification, and delivery authorization.
 
-Use /tdd where possible, at pre-agreed seams.
+## OpenSpec work
 
-Run typechecking regularly, single test files regularly, and the full test suite once at the end.
+When the input is an OpenSpec change or a ticket mapped to an OpenSpec task, invoke `openspec-apply-change` for the selected change. Let it follow the project workflow through the completion boundary defined there.
 
-Once done, use /code-review to review the work.
+## Other inputs
 
-Commit your work to the current branch.
+For every other input, follow the route selected by the project workflow. If that route requires planning first, return to its planning section instead of implementing directly.
+
+## Completion boundary
+
+Report the changed behavior and verification evidence, then stop at the workflow's completion boundary.

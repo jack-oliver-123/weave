@@ -137,7 +137,7 @@ Weave 是一个分层架构的 CodingAgent，设计原则：**每层只管自己
 
 - `npm run dev` — 以 tsx 直接跑 `src/main.ts`（无需先 build）
 - `npm run typecheck` — `tsc --noEmit`，提交前必跑的类型门禁
-- `npm test` — **先**跑 `tests/ci/workflow-contract.mjs`（工作流契约门禁），**再**跑 vitest；两条都要过
+- `npm test` — **先**跑 `test:ci` 中的全部仓库契约门禁，**再**跑 vitest；两个阶段都要过
 - `npm run test:unit` / `test:integration` / `test:tui` — 按层切分的 vitest 入口
 - `npm run spec:validate` — `openspec validate --all --strict --no-interactive`，改 `openspec/` 后必跑
 - ESM：`"type": "module"` + `NodeNext`，import 必须带扩展名 `.js`（即使源是 `.ts`）

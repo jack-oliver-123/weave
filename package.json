@@ -18,7 +18,7 @@
     "start": "node dist/main.js",
     "dev": "tsx src/main.ts",
     "test": "npm run test:ci && vitest run",
-    "test:ci": "node tests/ci/workflow-contract.mjs",
+    "test:ci": "node tests/ci/workflow-contract.mjs && node tests/ci/engineering-skills-contract.mjs",
     "test:watch": "vitest",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
