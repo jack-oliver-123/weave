@@ -2,11 +2,13 @@ import OpenAI from 'openai';
 import { randomUUID } from 'node:crypto';
 import type { ResolvedProfile } from '../../config/index.js';
 import type { ChatSystemMode } from '../../config/index.js';
+import type { ProviderCredentialBroker } from '../../security/index.js';
 import type { FinishReason, LlmClient, LlmRequest, LlmStreamEvent, TokenUsage } from '../../shared/types.js';
 import { isRecord, mapClientError, ProtocolError, readNumber, readRecord, readString } from './errors.js';
 import { deepSeekThinkingExtension, type DisabledThinking } from './request-extensions.js';
 import { StreamCancelledError, StreamGuard } from './stream-guard.js';
 import { appendToolArguments, encodeChatRequest, parseToolArguments } from './tool-codecs.js';
+import { guardEncodedProviderRequest } from './final-input-guard.js';
 
 interface OpenAIChatTransportRequest {
   readonly model: string;
@@ -22,6 +24,7 @@ export interface OpenAIChatClientOptions {
   readonly timeoutMs?: number;
   readonly transport?: OpenAIChatTransport;
   readonly createCallId?: () => string;
+  readonly credentialBroker?: ProviderCredentialBroker;
 }
 
 export class OpenAIChatCompletionsClient implements LlmClient {
@@ -31,11 +34,13 @@ export class OpenAIChatCompletionsClient implements LlmClient {
   private readonly thinkingExtension: { readonly thinking?: DisabledThinking };
   private readonly createCallId: () => string;
   private readonly systemMode: ChatSystemMode;
+  private readonly resolvedProfile: ResolvedProfile;
 
   constructor(profile: ResolvedProfile, options: OpenAIChatClientOptions = {}) {
     this.profile = { name: profile.name, protocol: profile.protocol, model: profile.model };
+    this.resolvedProfile = profile;
     this.timeoutMs = options.timeoutMs ?? 120_000;
-    this.transport = options.transport ?? createSdkTransport(profile);
+    this.transport = options.transport ?? createSdkTransport(profile, options.credentialBroker);
     this.thinkingExtension = deepSeekThinkingExtension(profile.baseUrl);
     this.createCallId = options.createCallId ?? randomUUID;
     this.systemMode = profile.chatSystemMode ?? 'multiple';
@@ -51,14 +56,16 @@ export class OpenAIChatCompletionsClient implements LlmClient {
     const calls = new Map<number, { providerCallId?: string; name?: string; arguments: string }>();
     try {
       const encoded = encodeChatRequest(request.prompt, this.systemMode);
-      const source = await guard.wait(this.transport({
+      const transportRequest = {
         model: this.profile.model,
         messages: encoded.messages,
         maxTokens: request.maxTokens,
         ...this.thinkingExtension,
         ...(encoded.tools === undefined ? {} : { tools: encoded.tools, toolChoice: encoded.toolChoice }),
         signal: guard.signal,
-      }));
+      };
+      guardEncodedProviderRequest(this.resolvedProfile, { ...transportRequest, signal: undefined }, request);
+      const source = await guard.wait(this.transport(transportRequest));
       for await (const chunk of guard.iterate(source)) {
         if (!isRecord(chunk) || !Array.isArray(chunk.choices)) throw new ProtocolError();
         if (!started) {
@@ -118,8 +125,15 @@ export class OpenAIChatCompletionsClient implements LlmClient {
   }
 }
 
-function createSdkTransport(profile: ResolvedProfile): OpenAIChatTransport {
-  const client = new OpenAI({ apiKey: profile.apiKey, baseURL: profile.baseUrl, maxRetries: 0 });
+function createSdkTransport(profile: ResolvedProfile, broker?: ProviderCredentialBroker): OpenAIChatTransport {
+  const client = new OpenAI({
+    apiKey: profile.apiKey ?? 'credential-managed', baseURL: profile.baseUrl, maxRetries: 0,
+    ...(broker === undefined || profile.credentialRef === undefined ? {} : {
+      fetch: ((input: string | URL | Request, init?: RequestInit) => broker.fetch(
+        profile.credentialRef!, new URL(profile.baseUrl).origin, 'bearer', input, init,
+      )) as typeof fetch,
+    }),
+  });
   return ({ model, messages, maxTokens, thinking, tools, toolChoice, signal }) => client.chat.completions.create({
     model,
     messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],

@@ -5,7 +5,6 @@ export interface EngineLayer {
 }
 
 export class EngineLayerStub implements EngineLayer {
-  // eslint-disable-next-line require-yield
   async *runLoop(_turn: UserTurn, _context: ContextSnapshot): AsyncIterable<AgentEvent> {
     throw new Error('not implemented');
   }

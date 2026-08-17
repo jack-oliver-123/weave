@@ -1,0 +1,242 @@
+name: Certify Windows Backends
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  WEAVE_CERTIFICATION_KEY_ID: weave-certification-v1
+
+jobs:
+  certify-wsl2:
+    runs-on: [self-hosted, Windows, X64, WSL2]
+    timeout-minutes: 25
+    env:
+      WEAVE_BACKEND_VERSION: linux-userns-v1
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.x
+          cache: npm
+      - run: npm ci
+      - name: Run real WSL2 namespace certification
+        id: certification
+        env:
+          WEAVE_BACKEND_CERTIFICATION: wsl2
+        run: npx vitest run tests/certification/wsl2-read-tools.test.ts
+      - name: Write bound evidence
+        if: always()
+        env:
+          WEAVE_CERTIFICATION_SIGNING_KEY: ${{ secrets.WEAVE_CERTIFICATION_SIGNING_KEY }}
+        run: node scripts/write-certification-evidence.mjs wsl2 "${{ steps.certification.outcome }}" FilesystemRead,FilesystemWrite,ProcessSpawn process_identity,host_paths_hidden,raw_network_blocked,environment_cleared,devices_hidden,privilege_escalation_blocked,resource_limits,process_tree_cleanup,control_ipc_hidden,brokers_hidden,wsl_windows_mount_hidden,wsl_interop_hidden,wsl_windows_path_hidden
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: certification-wsl2-${{ github.sha }}
+          path: artifacts/certification/wsl2.json
+          if-no-files-found: error
+
+  certify-windows-sandbox-read:
+    runs-on: [self-hosted, Windows, X64, windows-sandbox-24h2]
+    timeout-minutes: 15
+    env:
+      WEAVE_BACKEND_VERSION: windows-sandbox-cli-v1
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.x
+          cache: npm
+      - run: npm ci
+      - name: Certify Windows Sandbox isolation and read-tool slice
+        id: certification
+        shell: powershell
+        env:
+          WEAVE_BACKEND_CERTIFICATION: windows-sandbox
+        run: |
+          $version = (wsb.exe --version).Trim()
+          $package = Get-AppxPackage -Name '*WindowsSandbox*' -ErrorAction Stop | Select-Object -First 1
+          "WEAVE_BACKEND_VERSION=windows-sandbox-cli-v1@$version#$($package.PackageFullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          npx vitest run tests/certification/windows-sandbox.test.ts
+      - name: Write bound read-slice evidence
+        if: always()
+        env:
+          WEAVE_CERTIFICATION_SIGNING_KEY: ${{ secrets.WEAVE_CERTIFICATION_SIGNING_KEY }}
+        run: node scripts/write-certification-evidence.mjs windows-sandbox "${{ steps.certification.outcome }}" FilesystemRead windows_11_24h2,windows_sandbox_feature,windows_sandbox_cli,process_identity,host_paths_hidden,raw_network_blocked,environment_cleared,devices_hidden,privilege_escalation_blocked,resource_limits,process_tree_cleanup,control_ipc_hidden,brokers_hidden,windows_registry_hidden,windows_read_tools
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: certification-windows-sandbox-${{ github.sha }}
+          path: artifacts/certification/windows-sandbox.json
+          if-no-files-found: error
+
+  certify-windows-sandbox-transactional-write:
+    runs-on: [self-hosted, Windows, X64, windows-sandbox-24h2]
+    timeout-minutes: 25
+    env:
+      WEAVE_BACKEND_VERSION: windows-sandbox-cli-v1
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.x
+          cache: npm
+      - run: npm ci
+      - name: Certify Windows Sandbox transactional write slice
+        id: certification
+        shell: powershell
+        env:
+          WEAVE_BACKEND_CERTIFICATION: windows-sandbox
+          WEAVE_WINDOWS_CERTIFICATION_SLICE: transactional-write
+        run: |
+          $version = (wsb.exe --version).Trim()
+          $package = Get-AppxPackage -Name '*WindowsSandbox*' -ErrorAction Stop | Select-Object -First 1
+          "WEAVE_BACKEND_VERSION=windows-sandbox-cli-v1@$version#$($package.PackageFullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          npx vitest run tests/certification/windows-sandbox.test.ts tests/unit/runner/workspace-transaction.test.ts
+      - name: Write bound transactional-write evidence
+        if: always()
+        env:
+          WEAVE_CERTIFICATION_SIGNING_KEY: ${{ secrets.WEAVE_CERTIFICATION_SIGNING_KEY }}
+        run: node scripts/write-certification-evidence.mjs windows-sandbox "${{ steps.certification.outcome }}" FilesystemRead,FilesystemWrite windows_11_24h2,windows_sandbox_feature,windows_sandbox_cli,process_identity,host_paths_hidden,raw_network_blocked,environment_cleared,devices_hidden,privilege_escalation_blocked,resource_limits,process_tree_cleanup,control_ipc_hidden,brokers_hidden,windows_registry_hidden,windows_read_tools,windows_transactional_write
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: certification-windows-sandbox-transactional-write-${{ github.sha }}
+          path: artifacts/certification/windows-sandbox.json
+          if-no-files-found: error
+
+  certify-windows-sandbox-structured-process:
+    runs-on: [self-hosted, Windows, X64, windows-sandbox-24h2]
+    timeout-minutes: 15
+    env:
+      WEAVE_BACKEND_VERSION: windows-sandbox-cli-v1
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.x
+          cache: npm
+      - run: npm ci
+      - name: Certify Windows Sandbox structured process slice
+        id: certification
+        env:
+          WEAVE_BACKEND_CERTIFICATION: windows-sandbox
+          WEAVE_WINDOWS_CERTIFICATION_SLICE: structured-process
+        run: |
+          $version = (wsb.exe --version).Trim()
+          $package = Get-AppxPackage -Name '*WindowsSandbox*' -ErrorAction Stop | Select-Object -First 1
+          "WEAVE_BACKEND_VERSION=windows-sandbox-cli-v1@$version#$($package.PackageFullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          npx vitest run tests/certification/windows-sandbox.test.ts
+      - name: Write bound structured-process evidence
+        if: always()
+        env:
+          WEAVE_CERTIFICATION_SIGNING_KEY: ${{ secrets.WEAVE_CERTIFICATION_SIGNING_KEY }}
+        run: node scripts/write-certification-evidence.mjs windows-sandbox "${{ steps.certification.outcome }}" "" windows_structured_process
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: certification-windows-sandbox-structured-process-${{ github.sha }}
+          path: artifacts/certification/windows-sandbox.json
+          if-no-files-found: error
+
+  certify-windows-sandbox-bash-availability:
+    runs-on: [self-hosted, Windows, X64, windows-sandbox-24h2]
+    timeout-minutes: 15
+    env:
+      WEAVE_BACKEND_VERSION: windows-sandbox-cli-v1
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.x
+          cache: npm
+      - run: npm ci
+      - name: Probe real noninteractive Bash inside Windows Sandbox
+        id: certification
+        env:
+          WEAVE_BACKEND_CERTIFICATION: windows-sandbox
+          WEAVE_WINDOWS_CERTIFICATION_SLICE: bash
+        run: |
+          $version = (wsb.exe --version).Trim()
+          $package = Get-AppxPackage -Name '*WindowsSandbox*' -ErrorAction Stop | Select-Object -First 1
+          "WEAVE_BACKEND_VERSION=windows-sandbox-cli-v1@$version#$($package.PackageFullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          npx vitest run tests/certification/windows-sandbox.test.ts
+      - name: Write explicit Bash-unavailable evidence
+        if: always()
+        env:
+          WEAVE_CERTIFICATION_SIGNING_KEY: ${{ secrets.WEAVE_CERTIFICATION_SIGNING_KEY }}
+        run: node scripts/write-certification-evidence.mjs windows-sandbox "${{ steps.certification.outcome }}" "" windows_bash=failed
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: certification-windows-sandbox-bash-${{ github.sha }}
+          path: artifacts/certification/windows-sandbox.json
+          if-no-files-found: error
+
+  certify-windows-credential-manager:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      WEAVE_BACKEND_VERSION: windows-credential-manager-v1
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.x
+          cache: npm
+      - run: npm ci
+      - name: Certify Windows Credential Manager adapter
+        id: certification
+        env:
+          WEAVE_CREDENTIAL_CERTIFICATION: windows
+        run: npx vitest run tests/certification/windows-credential-manager.test.ts
+      - name: Write bound credential evidence
+        if: always()
+        env:
+          WEAVE_CERTIFICATION_SIGNING_KEY: ${{ secrets.WEAVE_CERTIFICATION_SIGNING_KEY }}
+        run: node scripts/write-certification-evidence.mjs windows-credential-manager "${{ steps.certification.outcome }}" CredentialUse windows_credential_manager
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: certification-windows-credential-manager-${{ github.sha }}
+          path: artifacts/certification/windows-credential-manager.json
+          if-no-files-found: error
+
+  certify-windows-network-egress:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      WEAVE_BACKEND_VERSION: windows-egress-broker-v1
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.x
+          cache: npm
+      - run: npm ci
+      - name: Certify Windows controlled network egress
+        id: certification
+        env:
+          WEAVE_NETWORK_CERTIFICATION: windows
+        run: npx vitest run tests/certification/windows-network-egress.test.ts tests/unit/security/egress-broker.test.ts
+      - name: Write bound network evidence
+        if: always()
+        env:
+          WEAVE_CERTIFICATION_SIGNING_KEY: ${{ secrets.WEAVE_CERTIFICATION_SIGNING_KEY }}
+        run: node scripts/write-certification-evidence.mjs windows-egress-broker "${{ steps.certification.outcome }}" NetworkEgress windows_network_egress
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: certification-windows-network-egress-${{ github.sha }}
+          path: artifacts/certification/windows-egress-broker.json
+          if-no-files-found: error

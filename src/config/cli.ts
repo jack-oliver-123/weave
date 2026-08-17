@@ -1,6 +1,8 @@
 export type CliOptions =
   | { readonly action: 'help' }
   | { readonly action: 'version' }
+  | { readonly action: 'credential'; readonly operation: 'set' | 'delete'; readonly reference: string }
+  | { readonly action: 'credential'; readonly operation: 'list' }
   | {
       readonly action: 'run';
       readonly configPath?: string;
@@ -17,6 +19,7 @@ export class CliError extends Error {
 }
 
 export function parseCliArgs(args: readonly string[]): CliOptions {
+  if (args[0] === 'credential') return parseCredentialArgs(args.slice(1));
   let configPath: string | undefined;
   let profileName: string | undefined;
   let workspacePath: string | undefined;
@@ -74,6 +77,9 @@ export function assertSupportedNodeVersion(version = process.versions.node): voi
 export function helpText(): string {
   return [
     'Weave - 多协议终端对话',
+    '       weave credential set <reference>',
+    '       weave credential delete <reference>',
+    '       weave credential list',
     '',
     '用法: weave [--config <path>] [--profile <name>] [--workspace <path>] [--tools|--no-tools]',
     '',
@@ -86,6 +92,17 @@ export function helpText(): string {
     '  --help, -h        显示帮助',
     '  --version, -v     显示版本',
   ].join('\n');
+}
+
+function parseCredentialArgs(args: readonly string[]): CliOptions {
+  const operation = args[0];
+  if (operation === 'list' && args.length === 1) return { action: 'credential', operation };
+  if ((operation === 'set' || operation === 'delete') && args.length === 2) {
+    const reference = args[1]!;
+    if (!/^[A-Za-z][A-Za-z0-9._:-]{0,127}$/.test(reference)) throw new CliError('credential reference is invalid');
+    return { action: 'credential', operation, reference };
+  }
+  throw new CliError('Usage: weave credential set|delete|list');
 }
 
 function requireValue(args: readonly string[], index: number, option: string): string {

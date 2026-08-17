@@ -4,27 +4,51 @@ title: Weave WIKI
 
 # Weave WIKI
 
-Weave 是支持 Anthropic Messages、OpenAI Chat Completions 和 OpenAI Responses 的终端 Coding Agent。
+Weave 是支持 Anthropic Messages、OpenAI Chat Completions 和 OpenAI Responses 的终端 Coding Agent。所有模型交换与工具动作都经过 Task 级 Action Gateway。
 
-## 核心工具
+## 工具与权限
 
-工具默认启用，并固定提供六个核心工具：
+工具按运行时认证结果发布，不保证每个平台都出现完整集合：
 
-- `read_file`：读取工作区 UTF-8 文本文件或指定行范围。
-- `create_file`：创建新文件，不覆盖已有文件。
-- `edit_file`：通过唯一精确匹配原子编辑文件。
-- `glob`：按 glob 模式查找普通文件。
-- `grep`：逐行执行字面量文本搜索。
-- `bash`：在工作区内运行非交互 Bash 命令。
+- `read_file`、`glob`、`grep`：读取经授权的工作区内容。
+- `create_file`、`edit_file`：在 Task 私有 CoW 中变更，再由事务提交代理写入宿主。
+- `bash`：在无原始网络、清空环境的 Action Worker 中执行。
+- `remember`：经 `MemoryPersist` 授权后保存净化的项目或用户记忆。
 
-所有文件路径和 `bash.cwd` 都必须相对于启动工作区。默认工作区是启动目录，也可以使用 `weave --workspace <path>` 指定。使用 `weave --no-tools` 可关闭工具并恢复纯文本对话路径；配置文件也支持根节点或 profile 的 `tools.enabled`。
+权限模式为 `read_only`、`supervised` 和 `autonomous`。它们只提供默认裁决；hard deny、路径边界、项目收紧策略和 OS 认证结果始终优先。需要确认的动作在同一对话转录区展示，可选择单次允许、Task 内允许、拒绝或取消。
 
-本版本不包含权限审批、人工确认、命令 allowlist、进程沙箱或网络限制。`bash` 以当前用户权限运行，可能访问网络或产生工作区外副作用；只应在可信工作区和受控环境中启用。
+使用 `weave --no-tools` 可显式进入纯文本模式。沙箱缺失、探针未知或认证失败时不会回退到宿主工具执行。
 
-## 配置
+## 凭据
 
-参考仓库根目录的 `config.example.yaml`。工具开关优先级为命令行、当前 profile、配置根节点、默认值 `true`。
+profile 使用凭据引用，不保存明文：
 
-OpenAI Chat Completions profile 默认使用连续两个 `system` 消息分别承载稳定指令和动态提醒。仅当兼容端点不支持这种形式时，将该 profile 的 `chat_system_mode` 显式设为 `single`；此时两段内容合并为一个 `system` 消息，不会降级为 user 消息。该字段不适用于其他协议。
+```yaml
+profiles:
+  - name: claude
+    protocol: anthropic-messages
+    model: claude-model-name
+    base_url: https://api.anthropic.com
+    credential: provider:anthropic
+    thinking: false
+```
+
+管理命令：
+
+```text
+weave credential set provider:anthropic
+weave credential list
+weave credential delete provider:anthropic
+```
+
+`set` 在终端隐藏输入，也接受 stdin；`list` 只显示引用与更新时间。`${ENV}` 仅作为本 major 的弃用迁移入口，启动时会警告。明文 `api_key` 被拒绝。
+
+## 平台状态
+
+Linux 与 WSL2 使用独立 namespace 认证；WSL2 还验证 Windows 盘、interop 与 Windows PATH 不可见。Windows Sandbox 仅接受 Windows 11 24H2+ 新版 `wsb.exe`，并且只有单项纵切片真实认证后才发布对应能力。`failed`、`not_run`、`skipped`、`unknown` 和 `flaky` 都不发布能力。
+
+审计保存在工作区外，只记录摘要、裁决、票据与结果状态，默认保留 30 天或 100 MiB。事务恢复无法安全判定时进入 `RECOVERY_CONFLICT`，写能力保持关闭，用户确认只清理恢复元数据，不覆盖外部编辑。
+
+详细说明见 [运行时安全指南](/security/runtime-guide)、[本地认证状态](/security/certification-status) 和 [Agent 权限与沙箱架构](/security/agent-permission-system)。
 
 - [OpenSpec 变更](/changes/)

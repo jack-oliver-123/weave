@@ -1,9 +1,7 @@
 import { highlight, supportsLanguage, type Theme } from 'cli-highlight';
 import type {
-  BlockContent,
   List,
   ListItem,
-  Paragraph,
   PhrasingContent,
   Root,
   RootContent,

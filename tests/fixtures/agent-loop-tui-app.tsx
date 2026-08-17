@@ -10,6 +10,7 @@ import type {
   ToolDefinition,
   ToolExecutor,
 } from '../../src/shared/types.js';
+import { createTestActionGateway } from './test-action-gateway.js';
 
 const profile: ProfileSummary = {
   name: 'agent-loop-terminal-smoke',
@@ -143,10 +144,12 @@ function waitForCancellation(signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
 }
 
+const smokeClient = new AgentLoopSmokeClient();
+const smokeExecutor = new SmokeToolExecutor();
 const conversation = new ConversationManager(
-  new AgentLoopSmokeClient(),
+  smokeClient,
   new InMemoryConversationStore(),
-  { maxTokens: 256, toolExecutor: new SmokeToolExecutor() },
+  { maxTokens: 256, actionGateway: createTestActionGateway(smokeClient, smokeExecutor), availableTools: [readDefinition] },
 );
 
 await runTui({

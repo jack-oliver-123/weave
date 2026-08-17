@@ -16,3 +16,8 @@ export class MemoryLayerStub implements MemoryLayer {
 }
 
 export { InMemoryConversationStore } from './conversation-store.js';
+export {
+  InMemoryAuthorizedMemoryStore,
+  type MemoryStore,
+  type PersistedMemory,
+} from './authorized-memory-store.js';

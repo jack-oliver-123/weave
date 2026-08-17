@@ -51,14 +51,15 @@ describe('production prompt assembly', () => {
     expect(() => validateStaticPromptModules(items)).toThrow(TypeError);
   });
 
-  it('separates stable prompt, dynamic reminder, tools and messages without audit bodies', () => {
+  it('keeps stable system fixed and routes dynamic context to untrusted messages without audit bodies', () => {
     const runtime = buildRuntimeState({ mode: 'react', iterationLimit: 10 });
     const assembled = assemblePrompt({ runtime, environment, tools: [], messages: [{ role: 'user', content: 'secret-user-text' }] });
     expect(assembled.system.stable.text).toContain('<identity>');
-    expect(assembled.system.reminder?.text).toContain('<system-reminder>');
-    expect(assembled.system.reminder?.text).toContain('&lt;/system-reminder&gt;');
-    expect(assembled.system.reminder?.fragments.map((item) => item.kind)).toEqual(['runtime_state', 'environment']);
-    expect(assembled.messages).toEqual([{ role: 'user', content: 'secret-user-text' }]);
+    expect(assembled.system).toEqual({ stable: assembled.system.stable });
+    expect(assembled.messages).toHaveLength(3);
+    expect(assembled.messages.slice(0, 2).every((message) => message.role === 'user')).toBe(true);
+    expect(assembled.messages[1]?.content).toContain('\\u003c/system-reminder\\u003e');
+    expect(assembled.messages.at(-1)).toEqual({ role: 'user', content: 'secret-user-text' });
     expect(JSON.stringify(assembled.audit)).not.toContain('secret-user-text');
     expect(JSON.stringify(assembled.audit)).not.toContain('C:\\Code\\Weave');
     expect(assembled.audit.assemblyHash).toMatch(/^[a-f0-9]{64}$/);
@@ -79,9 +80,9 @@ describe('production prompt assembly', () => {
       'runtime_state', 'environment', 'activated_skill', 'project_instructions', 'memory',
     ]);
     const withoutExtensions = assemblePrompt({ runtime: buildRuntimeState({ mode: 'react', iterationLimit: 10 }), tools: [], messages: [] });
-    expect(withoutExtensions.system.reminder?.text).not.toContain('activated_skill');
-    expect(withoutExtensions.system.reminder?.text).not.toContain('project_instructions');
-    expect(withoutExtensions.system.reminder?.text).not.toContain('memory');
+    expect(JSON.stringify(withoutExtensions.messages)).not.toContain('activated_skill');
+    expect(JSON.stringify(withoutExtensions.messages)).not.toContain('project_instructions');
+    expect(JSON.stringify(withoutExtensions.messages)).not.toContain('memory');
   });
 
   it('routes all eight sources to only system, tools and messages', () => {
@@ -96,11 +97,12 @@ describe('production prompt assembly', () => {
     });
     expect(Object.keys(assembled).sort()).toEqual(['audit', 'messages', 'system', 'tools']);
     expect(assembled.system.stable.text).not.toContain('history-body');
-    expect(assembled.system.reminder?.text).toContain('project-body');
-    expect(assembled.system.reminder?.text).toContain('memory-body');
-    expect(assembled.system.reminder?.text).toContain('skill-body');
+    expect(assembled.system).toEqual({ stable: assembled.system.stable });
+    expect(JSON.stringify(assembled.messages)).toContain('project-body');
+    expect(JSON.stringify(assembled.messages)).toContain('memory-body');
+    expect(JSON.stringify(assembled.messages)).toContain('skill-body');
     expect(JSON.stringify(assembled.tools)).not.toContain('history-body');
-    expect(assembled.messages).toEqual([{ role: 'user', content: 'history-body' }]);
+    expect(assembled.messages.at(-1)).toEqual({ role: 'user', content: 'history-body' });
   });
 
   it('rejects invalid control characters and escapes forged tags', () => {
@@ -123,9 +125,9 @@ describe('production prompt assembly', () => {
     const prompt = assemblePrompt({
       runtime: buildRuntimeState({ mode: 'react', iterationLimit: 10 }), environment: content, tools: [], messages: [],
     });
-    expect(prompt.system.reminder?.text).toContain('C:/repo');
-    expect(prompt.system.reminder?.text).not.toContain('secret-branch');
-    expect(prompt.system.reminder?.text).not.toContain('secret-url');
+    expect(JSON.stringify(prompt.messages)).toContain('C:/repo');
+    expect(JSON.stringify(prompt.messages)).not.toContain('secret-branch');
+    expect(JSON.stringify(prompt.messages)).not.toContain('secret-url');
   });
 
   it('only admits relevant capability changes as trusted runtime fragments', () => {

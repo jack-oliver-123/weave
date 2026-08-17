@@ -57,6 +57,19 @@ describe('WeaveView', () => {
     expect(frame).toContain(label);
   });
 
+  it('明确显示结果审计失败后外部效果可能已发生且结果未释放', () => {
+    let state = reduceTuiState(initialTuiState(), { type: 'turn_event', event: {
+      type: 'turn_start', turnId: 'security-turn', userText: '执行动作', startedAt: 0, taskMode: 'react',
+    } });
+    state = reduceTuiState(state, { type: 'turn_event', event: {
+      type: 'task_state', turnId: 'security-turn', taskId: 'task-1', state: 'security_integrity_failure',
+      summary: '结果审计失败。', effectsMayHaveOccurred: true,
+    } });
+    const frame = render(<WeaveView {...baseProps} state={state} />).lastFrame() ?? '';
+    expect(frame).toContain('外部效果可能已发生，结果未释放');
+    expect(frame).toContain('安全完整性故障');
+  });
+
   it('终端小于 80x24 时只显示单一尺寸提示，恢复尺寸后原状态仍可渲染', () => {
     const state = reduceTuiState(initialTuiState(), { type: 'set_composer', value: '保留草稿' });
     const small = render(<WeaveView {...baseProps} columns={79} rows={23} state={state} />).lastFrame() ?? '';
@@ -76,6 +89,26 @@ describe('WeaveView', () => {
     expect(second).toContain('⠙ 等待响应');
     expect(first.match(/\/ \\__/g)).toHaveLength(1);
     expect(second.match(/\/ \\__/g)).toHaveLength(1);
+  });
+
+  it('长授权批次仍在唯一转录区滚动并保留固定底部输入区', () => {
+    let state = reduceTuiState(initialTuiState(), { type: 'turn_event', event: {
+      type: 'turn_start', turnId: 'auth-turn', userText: '执行批次', startedAt: 0, taskMode: 'react',
+    } });
+    state = reduceTuiState(state, { type: 'turn_event', event: {
+      type: 'authorization_requested', turnId: 'auth-turn', taskId: 'task-1', runId: 'run-1',
+      authorizationRequestId: 'auth-1', authorizationEpoch: 1,
+      items: Array.from({ length: 20 }, (_, index) => ({
+        callId: `call-${index}`, actionDigest: `digest-${index}`, toolName: 'edit_file',
+        summary: `修改文件 ${index + 1}`, capabilityTypes: ['FilesystemWrite'], risks: index === 19 ? ['HIGH_RISK'] : [],
+      })),
+    } });
+    const frame = render(<WeaveView {...baseProps} state={state} />).lastFrame() ?? '';
+    expect(frame.split('\n')).toHaveLength(30);
+    expect(frame).toContain('20. edit_file');
+    expect(frame).toContain('允许一次');
+    expect(frame).toContain('ReAct · 等待授权');
+    expect(frame).toContain('openai-responses / gpt-test');
   });
 
   it('在单一 transcript 中紧凑显示工具状态、错误码与整轮统计', () => {

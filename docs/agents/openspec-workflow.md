@@ -94,8 +94,8 @@ Issue 正文必须标明 OpenSpec change、覆盖的全部 task 编号和仓库�
 1. 读取 OpenSpec apply instructions 的全部 `contextFiles`。每个未完成 task 必须已有有效 Issue 映射；缺失时停止并要求先显式运行 `/to-tickets`。
 2. 从 tasks 和 contextFiles 识别本次将触及的 seam，向用户确认后再写测试或实现。
 3. 记录 `git rev-parse HEAD` 作为本次实现的 code-review fixed point。
-4. 只领取 blocker Issues 已全部关闭的 frontier Issue；在该 Issue 覆盖范围内按 TDD 逐项完成 OpenSpec tasks：red、最小 green、勾选 task。重构和清理放到 review 返修阶段。
-5. Apply 不自动关闭 GitHub Issue。任务状态回写属于单独的远程操作授权。
+4. 按 OpenSpec tasks 的实现顺序领取下一个未完成 Ticket；GitHub Issue 状态只用于协作同步，不构成本地实施门槛。在该 Issue 覆盖范围内按 TDD 逐项完成 OpenSpec tasks：red、最小 green、勾选 task。重构和清理放到 review 返修阶段。
+5. Apply 不自动关闭或更新 GitHub Issue，也不写入 blocker 评论、标签或状态。任务状态回写属于单独的远程操作授权；未满足的环境前提只记录在本地 Apply 结果中。
 
 ## Review 与验证
 

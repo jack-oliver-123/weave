@@ -48,25 +48,26 @@ describe('tool protocol codecs', () => {
     const messages = [{ role: 'user', content: '你好' }] as const;
     const prompt = assembled(messages);
     expect(encodeAnthropicRequest(prompt)).not.toHaveProperty('tools');
-    expect(encodeAnthropicRequest(prompt).system).toHaveLength(2);
+    expect(encodeAnthropicRequest(prompt).system).toHaveLength(1);
     expect(encodeChatRequest(prompt)).not.toHaveProperty('tools');
-    expect(encodeChatRequest(prompt).messages.slice(0, 2).map((message) => (message as { role: string }).role)).toEqual(['system', 'system']);
+    expect(encodeChatRequest(prompt).messages.slice(0, 2).map((message) => (message as { role: string }).role)).toEqual(['system', 'user']);
     expect(encodeResponsesRequest(prompt)).not.toHaveProperty('tools');
-    expect(encodeResponsesRequest(prompt).instructions).toContain('<system-reminder>');
+    expect(encodeResponsesRequest(prompt).instructions).not.toContain('<system-reminder>');
   });
 
   it('Chat 单 system 兼容模式合并稳定指令和动态提醒', () => {
     const prompt = assembled([{ role: 'user', content: '你好' }]);
     const encoded = encodeChatRequest(prompt, 'single');
-    expect(encoded.messages).toHaveLength(2);
+    expect(encoded.messages).toHaveLength(3);
     expect(encoded.messages[0]).toMatchObject({ role: 'system' });
     expect((encoded.messages[0] as { content: string }).content).toContain('<identity>');
-    expect((encoded.messages[0] as { content: string }).content).toContain('<system-reminder>');
-    expect(encoded.messages[1]).toEqual({ role: 'user', content: '你好' });
+    expect((encoded.messages[0] as { content: string }).content).not.toContain('<system-reminder>');
+    expect(encoded.messages[1]).toMatchObject({ role: 'user', content: expect.stringContaining('untrusted_context') });
+    expect(encoded.messages[2]).toEqual({ role: 'user', content: '你好' });
   });
 
   it('映射三种原生历史并保留 Provider call ID 与错误标记', () => {
-    expect(encodeAnthropicRequest(assembled(history)).messages).toEqual([
+    expect(encodeAnthropicRequest(assembled(history)).messages.slice(1)).toEqual([
       { role: 'assistant', content: [
         { type: 'text', text: '我来读取。' },
         { type: 'tool_use', id: 'provider-1', name: 'read_file', input: { path: 'a.txt' } },
@@ -79,7 +80,7 @@ describe('tool protocol codecs', () => {
       { role: 'assistant', tool_calls: [{ id: 'provider-1' }] },
       { role: 'tool', tool_call_id: 'provider-1' },
     ]);
-    expect(encodeResponsesRequest(assembled(history)).messages).toMatchObject([
+    expect(encodeResponsesRequest(assembled(history)).messages.slice(1)).toMatchObject([
       { role: 'assistant', content: '我来读取。' },
       { type: 'function_call', call_id: 'provider-1' },
       { type: 'function_call_output', call_id: 'provider-1' },

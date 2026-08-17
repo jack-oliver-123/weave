@@ -1,4 +1,4 @@
-import type { Plan, SafeError, TokenUsage, TurnEvent } from '../shared/types.js';
+import type { AuthorizationChoice, AuthorizationRequestView, Plan, SafeError, TokenUsage, TurnEvent } from '../shared/types.js';
 import type { TaskDecision } from './task-input.js';
 
 export type TranscriptPhase =
@@ -27,7 +27,8 @@ export interface TranscriptTurn {
 export type TranscriptActivity =
   | { readonly type: 'text'; readonly text: string }
   | { readonly type: 'plan'; readonly plan: Plan }
-  | { readonly type: 'task'; readonly state: string; readonly summary: string; readonly runCount?: number; readonly totalIterations?: number }
+  | { readonly type: 'task'; readonly state: string; readonly summary: string; readonly effectsMayHaveOccurred?: boolean; readonly runCount?: number; readonly totalIterations?: number }
+  | { readonly type: 'authorization'; readonly request: AuthorizationRequestView }
   | {
       readonly type: 'tool'; readonly callId: string; readonly toolName: string;
       readonly status: 'queued' | 'running' | 'success' | 'error' | 'skipped';
@@ -35,10 +36,10 @@ export type TranscriptActivity =
     };
 
 export type TaskDisplayState =
-  | { readonly mode: 'react'; readonly phase: 'idle' | 'running' | 'awaiting_input' | 'stopped' | 'cancelled' }
+  | { readonly mode: 'react'; readonly phase: 'idle' | 'running' | 'awaiting_input' | 'awaiting_authorization' | 'stopped' | 'cancelled' | 'security_integrity_failure' }
   | {
       readonly mode: 'plan';
-      readonly phase: 'planning' | 'awaiting_approval' | 'executing' | 'awaiting_input' | 'stopped' | 'cancelled';
+      readonly phase: 'planning' | 'awaiting_approval' | 'executing' | 'awaiting_input' | 'awaiting_authorization' | 'stopped' | 'cancelled' | 'security_integrity_failure';
       readonly currentStep?: number;
       readonly totalSteps?: number;
       readonly resumePhase?: 'planning' | 'executing';
@@ -55,6 +56,9 @@ export interface TuiState {
   readonly feedback?: string;
   readonly taskDecision?: TaskDecision;
   readonly selectedDecision: number;
+  readonly pendingAuthorization?: AuthorizationRequestView;
+  readonly authorizationChoices: readonly AuthorizationChoice[];
+  readonly selectedAuthorizationItem: number;
   readonly taskDisplay: TaskDisplayState;
 }
 
@@ -68,12 +72,15 @@ export type TuiAction =
   | { readonly type: 'undo_queue' }
   | { readonly type: 'set_feedback'; readonly value?: string }
   | { readonly type: 'select_decision'; readonly index: number }
-  | { readonly type: 'clear_task_decision' };
+  | { readonly type: 'clear_task_decision' }
+  | { readonly type: 'select_authorization_item'; readonly index: number }
+  | { readonly type: 'set_authorization_choice'; readonly choice: AuthorizationChoice }
+  | { readonly type: 'clear_authorization' };
 
 export function initialTuiState(): TuiState {
   return {
     transcript: [], composer: '', streamStatus: 'idle', queuedMessages: [], queueStatus: 'active', selectedDecision: 0,
-    taskDisplay: { mode: 'react', phase: 'idle' },
+    taskDisplay: { mode: 'react', phase: 'idle' }, authorizationChoices: [], selectedAuthorizationItem: 0,
   };
 }
 
@@ -113,6 +120,16 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
   if (action.type === 'set_feedback') return { ...state, feedback: action.value };
   if (action.type === 'select_decision') return { ...state, selectedDecision: action.index };
   if (action.type === 'clear_task_decision') return { ...state, taskDecision: undefined, selectedDecision: 0 };
+  if (action.type === 'select_authorization_item') return { ...state, selectedAuthorizationItem: action.index };
+  if (action.type === 'set_authorization_choice') {
+    if (state.pendingAuthorization === undefined) return state;
+    const choices = [...state.authorizationChoices];
+    choices[state.selectedAuthorizationItem] = action.choice;
+    return { ...state, authorizationChoices: choices };
+  }
+  if (action.type === 'clear_authorization') {
+    return { ...state, pendingAuthorization: undefined, authorizationChoices: [], selectedAuthorizationItem: 0 };
+  }
   const event = action.event;
 
   if (event.type === 'turn_start') {
@@ -190,6 +207,21 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
     };
   }
 
+  if (event.type === 'authorization_requested') {
+    return {
+      ...state,
+      transcript: replaceTurn(state.transcript, index, (turn) => ({
+        ...turn,
+        activities: [...turn.activities, { type: 'authorization', request: event }],
+      })),
+      pendingAuthorization: event,
+      authorizationChoices: event.items.map(() => 'allow_once'),
+      selectedAuthorizationItem: 0,
+      streamStatus: 'streaming',
+      taskDisplay: displayForTaskState(state.taskDisplay, 'awaiting_authorization'),
+    };
+  }
+
   if (event.type === 'task_state') {
     const taskDecision = event.state === 'stopped' ? { kind: 'stopped' as const, taskId: event.taskId }
       : event.state === 'cancelled' ? cancelledDecision(state.taskDecision, event.taskId)
@@ -199,6 +231,7 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
       transcript: replaceTurn(state.transcript, index, (turn) => ({
         ...turn,
         activities: [...turn.activities, { type: 'task', state: event.state, summary: event.summary,
+          ...(event.effectsMayHaveOccurred === undefined ? {} : { effectsMayHaveOccurred: event.effectsMayHaveOccurred }),
           ...(event.runCount === undefined ? {} : { runCount: event.runCount }),
           ...(event.totalIterations === undefined ? {} : { totalIterations: event.totalIterations }) }],
       })),
@@ -232,6 +265,9 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
         ...(event.toolErrorCount === undefined ? {} : { toolErrorCount: event.toolErrorCount }),
       })),
       activeTurnId: undefined,
+      pendingAuthorization: undefined,
+      authorizationChoices: [],
+      selectedAuthorizationItem: 0,
       streamStatus: 'idle',
       queueStatus: event.status === 'completed' || state.queuedMessages.length === 0 ? state.queueStatus : 'paused',
       taskDisplay: displayAfterTurnComplete(state.taskDisplay, event.status),
@@ -243,6 +279,9 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
       ...state,
       transcript: replaceTurn(state.transcript, index, (turn) => ({ ...turn, phase: 'cancelled', durationMs: event.durationMs })),
       activeTurnId: undefined,
+      pendingAuthorization: undefined,
+      authorizationChoices: [],
+      selectedAuthorizationItem: 0,
       streamStatus: 'idle',
       queueStatus: state.queuedMessages.length === 0 ? state.queueStatus : 'paused',
       taskDisplay: state.taskDisplay.mode === 'plan'
@@ -261,8 +300,11 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
       error: event.error,
       durationMs: event.durationMs,
     })),
-    composer: joinDrafts(event.restoreInput, state.composer),
+    composer: joinDrafts(event.restoreInput ?? '', state.composer),
     activeTurnId: undefined,
+    pendingAuthorization: undefined,
+    authorizationChoices: [],
+    selectedAuthorizationItem: 0,
     streamStatus: 'idle',
     queueStatus: state.queuedMessages.length === 0 ? state.queueStatus : 'paused',
   };

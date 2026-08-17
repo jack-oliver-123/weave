@@ -44,20 +44,20 @@ Weave 是一个分层架构的 CodingAgent，设计原则：**每层只管自己
 - 流式输出解析与事件分发
 - **不负责：** 工具的具体实现、权限校验、持久化存储
 
-**对下接口：** 向工具层发出 `ToolCallRequest`，接收 `ToolCallResult`；从记忆层拉取 `ContextSnapshot`。
+**对下接口：** 通过 Task 级 `ActionTask` 发起 `ModelExchangeRef` 和 `ProposalBatchRef`，只接收经过 Gateway 守卫的模型事件、授权请求与结构化结果；从记忆层拉取 `ContextSnapshot`。
 
 ---
 
 ### 工具层 (Tool Layer)
 
-**职责：** 注册、路由、执行所有工具，管理 MCP 连接，触发 Hooks。
+**职责：** 定义并注册业务工具，管理 MCP 连接与工具适配器；有副作用或可接触非公开数据的执行交给认证 Runner。
 
-- 内置工具（Read、Write、Edit、Bash、Glob、Grep 等）的实现
+- 内置工具（Read、Write、Edit、Bash、Glob、Grep 等）的定义与执行适配器
 - MCP server 连接管理（stdio / SSE），工具代理转发
 - Hook 事件分发（PreToolCall、PostToolCall、Stop 等）
 - **不负责：** LLM 通信、对话历史、权限决策（权限判断委托给安全层）
 
-**对下接口：** 每次工具执行前向安全层提交 `PermissionRequest`，收到 `allow/deny/ask` 决策后再执行或中止。
+**对下接口：** 向 Action Gateway 提供中立 `ToolDefinition`；业务动作只接受 Gateway 保管的提案引用，经过完整预检后由带票据的认证 Runner 执行。
 
 ---
 
@@ -80,18 +80,19 @@ Weave 是一个分层架构的 CodingAgent，设计原则：**每层只管自己
 
 - 权限规则引擎（settings.json allowlist / denylist 求值）
 - HITL（Human-in-the-loop）：需要用户确认时阻塞并等待响应
-- 沙箱策略：限制文件路径、网络、进程等资源访问范围
+- Secure Context、Input/Output Guard、审计、票据和数据披露控制
+- Runner 控制面与沙箱策略：限制文件路径、网络、进程等资源访问范围
 - **不负责：** 工具的具体实现、对话逻辑
 
-**接口：** 暴露单一入口 `authorize(action) → Decision`，Decision = `{ verdict: allow|deny|ask, reason? }`。`ask` 时由交互层向用户呈现确认对话框。
+**接口：** 暴露 Task 级深接口 `ActionGateway.openTask(...) → ActionTask`。`ActionTask` 内部组合定义筛选、规范化、五层预检、HITL、审计、签票、Runner 调度、结果守卫和按 destination 独立披露；调用方不得绕过该入口重建动作或原始上下文。
 
 ---
 
 ## 层间通信原则
 
-1. **单向依赖**：依赖只能从上到下，下层不感知上层存在。
+1. **单向依赖**：业务编排从交互层进入引擎层，再进入 Action Gateway；底层存储、工具和 Runner 不反向依赖交互或会话实现。
 2. **接口稳定**：跨层通信使用类型化的请求/响应对象，不传递内部实现引用。
-3. **安全层例外**：安全层是横切关注点，工具层在执行前同步调用，不异步绕过。
+3. **安全层例外**：安全层是横切边界，模型交换、业务动作、持久记忆和数据披露都必须经 Task 级 Gateway；认证 Runner 只接受绑定当前 Task/Run/Action 的票据。
 4. **记忆层只读于引擎**：引擎层只读取记忆层快照，写入请求由交互层或引擎层在合适时机发起。
 
 ---

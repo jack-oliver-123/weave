@@ -19,7 +19,7 @@ describe('LLM 客户端工厂和边界', () => {
 
   it('共享契约不包含 SDK 类型、供应商事件、鉴权头或响应体', async () => {
     const source = await readFile(new URL('../../../src/shared/types.ts', import.meta.url), 'utf8');
-    expect(source).not.toMatch(/@anthropic-ai|from ['"]openai|authorization|x-api-key/i);
+    expect(source).not.toMatch(/@anthropic-ai|from ['"]openai|['"]authorization['"]|x-api-key/i);
     expect(source).not.toMatch(/message_start|content_block_delta|chat\.completion\.chunk|response\.output_text/);
     expect(source).not.toMatch(/ResponseStreamEvent|MessageStreamEvent|ChatCompletionChunk/);
   });

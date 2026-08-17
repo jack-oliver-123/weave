@@ -40,7 +40,7 @@ describe('OpenAIResponsesClient', () => {
     const sent = transport.mock.calls[0]?.[0];
     expect(sent).toMatchObject({ messages: request().prompt.messages, maxTokens: 321 });
     expect(sent.instructions).toContain('<identity>');
-    expect(sent.instructions).toContain('<system-reminder>');
+    expect(sent.instructions).not.toContain('<system-reminder>');
     expect(sent).not.toHaveProperty('previousResponseId');
     expect(sent).not.toHaveProperty('thinking');
     expect(sent).not.toHaveProperty('reasoning');
