@@ -4,6 +4,7 @@ import {
   REQUIRED_SANDBOX_PROBES,
   createLinuxSandboxUnavailableError,
   linuxReadToolDefinitions,
+  namespaceLaunchPlan,
   type NamespaceExecution,
   type NamespaceTransport,
 } from '../../../src/runner/index.js';
@@ -83,6 +84,20 @@ describe('Linux namespace backend certification', () => {
 
   it('exposes only the certified read tool surface', () => {
     expect(linuxReadToolDefinitions().map((tool) => tool.name)).toEqual(['read_file', 'glob', 'grep', 'create_file', 'edit_file', 'bash']);
+  });
+
+  it('launches Linux unshare as a tokenized namespace init with an explicit tree terminator', () => {
+    const plan = namespaceLaunchPlan('linux', 'weave-namespace-test', ['--user', '/usr/bin/true']);
+
+    expect(plan).toEqual({
+      executable: '/usr/bin/bash',
+      args: [
+        '--noprofile', '--norc', '-c', 'exec -a "$1" /usr/bin/unshare "${@:2}"',
+        '_', 'weave-namespace-test', '--user', '/usr/bin/true',
+      ],
+      terminateExecutable: 'pkill',
+      terminateArgs: ['-KILL', '-f', '--', 'weave-namespace-test'],
+    });
   });
 });
 

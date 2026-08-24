@@ -395,18 +395,16 @@ export class HostNamespaceTransport implements NamespaceTransport {
   private constructor(
     readonly platform: 'linux' | 'wsl2',
     readonly osDescription: string,
-    private readonly executable: string,
   ) {}
 
   static async create(requested?: 'linux' | 'wsl2'): Promise<HostNamespaceTransport> {
     const platform = requested ?? (process.platform === 'win32' ? 'wsl2' : 'linux');
-    const executable = platform === 'wsl2' ? 'wsl.exe' : 'unshare';
     const version = platform === 'wsl2'
       ? await runProcess('wsl.exe', ['--exec', 'uname', '-r'])
       : await runProcess('uname', ['-r']);
     const description = version.stdout.toString('utf8').trim();
     if (platform === 'wsl2' && !/microsoft-standard-WSL2/i.test(description)) throw new Error('WSL1_UNSUPPORTED');
-    return new HostNamespaceTransport(platform, description, executable);
+    return new HostNamespaceTransport(platform, description);
   }
 
   async toSandboxPath(hostPath: string): Promise<string> {
@@ -420,21 +418,15 @@ export class HostNamespaceTransport implements NamespaceTransport {
     debugLinuxCertification(`transport:${mode}:start`);
     const encoded = [workspacePath, mode, ...args].map((value) => Buffer.from(value, 'utf8').toString('base64'));
     const unshare = ['--user', '--map-root-user', '--mount', '--pid', '--fork', '--net', '/usr/bin/bash', '-s', '--', ...encoded];
-    if (this.platform !== 'wsl2') {
-      return runProcess(this.executable, unshare, NAMESPACE_SCRIPT, signal)
-        .finally(() => debugLinuxCertification(`transport:${mode}:complete`));
-    }
     const token = `weave-namespace-${randomUUID()}`;
+    const launch = namespaceLaunchPlan(this.platform, token, unshare);
     return runProcess(
-      this.executable,
-      [
-        '--exec', '/usr/bin/bash', '--noprofile', '--norc', '-c',
-        'exec -a "$1" /usr/bin/unshare "${@:2}"', '_', token, ...unshare,
-      ],
+      launch.executable,
+      launch.args,
       NAMESPACE_SCRIPT,
       signal,
       async () => {
-        await runProcess('wsl.exe', ['--exec', 'pkill', '-KILL', '-f', '--', token]);
+        await runProcess(launch.terminateExecutable, launch.terminateArgs);
       },
     ).finally(() => debugLinuxCertification(`transport:${mode}:complete`));
   }
@@ -475,6 +467,35 @@ export class HostNamespaceTransport implements NamespaceTransport {
     if (this.platform === 'wsl2') await runProcess('wsl.exe', ['--exec', 'kill', '-KILL', String(pid)]);
     else await runProcess('kill', ['-KILL', String(pid)]);
   }
+}
+
+export function namespaceLaunchPlan(
+  platform: 'linux' | 'wsl2',
+  token: string,
+  unshareArgs: readonly string[],
+): {
+  readonly executable: string;
+  readonly args: readonly string[];
+  readonly terminateExecutable: string;
+  readonly terminateArgs: readonly string[];
+} {
+  const bashArgs = [
+    '--noprofile', '--norc', '-c', 'exec -a "$1" /usr/bin/unshare "${@:2}"',
+    '_', token, ...unshareArgs,
+  ];
+  return platform === 'wsl2'
+    ? {
+        executable: 'wsl.exe',
+        args: ['--exec', '/usr/bin/bash', ...bashArgs],
+        terminateExecutable: 'wsl.exe',
+        terminateArgs: ['--exec', 'pkill', '-KILL', '-f', '--', token],
+      }
+    : {
+        executable: '/usr/bin/bash',
+        args: bashArgs,
+        terminateExecutable: 'pkill',
+        terminateArgs: ['-KILL', '-f', '--', token],
+      };
 }
 
 const NAMESPACE_SCRIPT = String.raw`set -eu
