@@ -21,7 +21,7 @@ const unsignedEvidence = {
   os: { platform: platform(), release: release(), version: version() },
   backend,
   backendVersion: process.env.WEAVE_BACKEND_VERSION ?? 'working-tree',
-  probeVersion: '1',
+  probeVersion: process.env.WEAVE_PROBE_VERSION ?? '1',
   status,
   capabilities: status === 'passed' ? capabilities : [],
   probes,

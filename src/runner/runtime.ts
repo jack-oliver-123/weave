@@ -10,7 +10,11 @@ import {
   RUNNER_PROTOCOL_VERSION,
 } from './protocol.js';
 import { openRunnerControlChannel } from './ipc-control.js';
-import { LinuxNamespaceBackend, linuxReadToolDefinitions } from './linux-backend.js';
+import {
+  LinuxNamespaceBackend,
+  linuxCertificationFailureProbeIds,
+  linuxReadToolDefinitions,
+} from './linux-backend.js';
 import { defaultResourceBudget } from './resources.js';
 import { RunnerSupervisor } from './supervisor.js';
 import { SupervisorActionRunnerParticipant } from './action-runner.js';
@@ -147,7 +151,7 @@ export async function createCertifiedWindowsRunnerRuntime(
 export async function createCertifiedReadRunnerRuntime(workspaceRoot: string): Promise<CertifiedReadRunnerRuntime> {
   const platform = process.platform === 'win32' ? 'wsl2' : 'linux';
   const backend = await LinuxNamespaceBackend.create({ workspaceRoot, platform });
-  if (!backend.report.capabilities.includes('FilesystemRead')) throw new Error('SANDBOX_UNAVAILABLE');
+  if (!backend.report.capabilities.includes('FilesystemRead')) throw createLinuxSandboxUnavailableError(backend.report);
 
   const supervisor = await createAuthenticatedSupervisor(backend);
   const definitions = linuxReadToolDefinitions();
@@ -159,6 +163,11 @@ export async function createCertifiedReadRunnerRuntime(workspaceRoot: string): P
     backend.report.capabilities,
   );
   return Object.freeze({ runner, definitions, backend: platform, capabilityReport: backend.report });
+}
+
+export function createLinuxSandboxUnavailableError(report: CapabilityReport): Error {
+  const failures = linuxCertificationFailureProbeIds(report);
+  return new Error(`SANDBOX_UNAVAILABLE${failures.length === 0 ? '' : `: ${failures.join(',')}`}`);
 }
 
 async function createAuthenticatedSupervisor(backend: ConstructorParameters<typeof RunnerSupervisor>[1]) {

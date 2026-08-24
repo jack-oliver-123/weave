@@ -14,7 +14,8 @@ jobs:
     runs-on: [self-hosted, Windows, X64, WSL2]
     timeout-minutes: 25
     env:
-      WEAVE_BACKEND_VERSION: linux-userns-v1
+      WEAVE_BACKEND_VERSION: linux-userns-v2
+      WEAVE_PROBE_VERSION: '2'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -31,7 +32,7 @@ jobs:
         if: always()
         env:
           WEAVE_CERTIFICATION_SIGNING_KEY: ${{ secrets.WEAVE_CERTIFICATION_SIGNING_KEY }}
-        run: node scripts/write-certification-evidence.mjs wsl2 "${{ steps.certification.outcome }}" FilesystemRead,FilesystemWrite,ProcessSpawn process_identity,host_paths_hidden,raw_network_blocked,environment_cleared,devices_hidden,privilege_escalation_blocked,resource_limits,process_tree_cleanup,control_ipc_hidden,brokers_hidden,wsl_windows_mount_hidden,wsl_interop_hidden,wsl_windows_path_hidden
+        run: node scripts/write-certification-evidence.mjs wsl2 "${{ steps.certification.outcome }}" FilesystemRead,FilesystemWrite,ProcessSpawn namespace_bootstrap,process_identity,host_paths_hidden,raw_network_blocked,environment_cleared,devices_hidden,privilege_escalation_blocked,resource_limits,process_tree_cleanup,control_ipc_hidden,brokers_hidden,wsl_windows_mount_hidden,wsl_interop_hidden,wsl_windows_path_hidden
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

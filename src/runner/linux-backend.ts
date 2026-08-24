@@ -16,7 +16,15 @@ import {
 
 const MAX_RESULTS = 1_000;
 const MAX_SCAN_BYTES = 1024 * 1024;
-const BACKEND_VERSION = 'linux-userns-v1';
+const BACKEND_VERSION = 'linux-userns-v2';
+const PROBE_VERSION = '2';
+const NAMESPACE_BOOTSTRAP_PROBE = 'namespace_bootstrap';
+const WSL_PROBES = Object.freeze(['wsl_windows_mount_hidden', 'wsl_interop_hidden', 'wsl_windows_path_hidden']);
+const RUNTIME_PROBES = Object.freeze(['write_worker_runtime', 'atomic_replace', 'bash_runtime', 'timeout_runtime']);
+export const LINUX_REQUIRED_SANDBOX_PROBES = Object.freeze([
+  NAMESPACE_BOOTSTRAP_PROBE,
+  ...REQUIRED_SANDBOX_PROBES,
+]);
 
 export interface LinuxNamespaceBackendOptions {
   readonly workspaceRoot: string;
@@ -53,36 +61,46 @@ export class LinuxNamespaceBackend implements SandboxBackend {
     const workspacePath = await transport.toSandboxPath(options.workspaceRoot);
     const probe = await transport.run(workspacePath, 'probe', []);
     const statuses = parseProbeOutput(probe.stdout.toString('utf8'));
-    if (transport.verifyProcessTreeCleanup !== undefined) {
+    const inlineProbes = [
+      ...REQUIRED_SANDBOX_PROBES.filter((probeId) => probeId !== 'process_tree_cleanup'),
+      ...(transport.platform === 'wsl2' ? WSL_PROBES : []),
+      ...RUNTIME_PROBES,
+    ];
+    const bootstrapPassed = probe.exitCode === 0
+      && inlineProbes.every((probeId) => ['passed', 'failed'].includes(statuses.get(probeId) ?? ''));
+    statuses.set(NAMESPACE_BOOTSTRAP_PROBE, bootstrapPassed ? 'passed' : 'failed');
+    if (bootstrapPassed && transport.verifyProcessTreeCleanup !== undefined) {
       let cleanupPassed = false;
       try { cleanupPassed = await transport.verifyProcessTreeCleanup(workspacePath); } catch { cleanupPassed = false; }
       statuses.set('process_tree_cleanup', cleanupPassed ? 'passed' : 'failed');
+    } else if (!bootstrapPassed) {
+      statuses.set('process_tree_cleanup', 'failed');
     }
-    const evidence: ProbeEvidence[] = REQUIRED_SANDBOX_PROBES.map((probeId) => ({
+    const evidence: ProbeEvidence[] = LINUX_REQUIRED_SANDBOX_PROBES.map((probeId) => ({
       probeId,
       status: statuses.get(probeId) === 'passed' ? 'passed' : 'failed',
       commit: options.commit ?? 'working-tree',
       os: transport.osDescription,
       backend: transport.platform,
       backendVersion: BACKEND_VERSION,
-      probeVersion: '1',
+      probeVersion: PROBE_VERSION,
       evidenceDigest: evidenceDigest(probeId, statuses.get(probeId) ?? 'missing'),
     }));
     if (transport.platform === 'wsl2') {
-      for (const probeId of ['wsl_windows_mount_hidden', 'wsl_interop_hidden', 'wsl_windows_path_hidden']) {
+      for (const probeId of WSL_PROBES) {
         const status = statuses.get(probeId) === 'passed' ? 'passed' : 'failed';
         evidence.push({
           probeId, status, commit: options.commit ?? 'working-tree', os: transport.osDescription,
-          backend: 'wsl2', backendVersion: BACKEND_VERSION, probeVersion: '1',
+          backend: 'wsl2', backendVersion: BACKEND_VERSION, probeVersion: PROBE_VERSION,
           evidenceDigest: evidenceDigest(probeId, status),
         });
       }
     }
-    for (const probeId of ['write_worker_runtime', 'atomic_replace', 'bash_runtime', 'timeout_runtime']) {
+    for (const probeId of RUNTIME_PROBES) {
       const status = statuses.get(probeId) === 'passed' ? 'passed' : 'failed';
       evidence.push({
         probeId, status, commit: options.commit ?? 'working-tree', os: transport.osDescription,
-        backend: transport.platform, backendVersion: BACKEND_VERSION, probeVersion: '1',
+        backend: transport.platform, backendVersion: BACKEND_VERSION, probeVersion: PROBE_VERSION,
         evidenceDigest: evidenceDigest(probeId, status),
       });
     }
@@ -92,8 +110,12 @@ export class LinuxNamespaceBackend implements SandboxBackend {
       backendVersion: BACKEND_VERSION,
       requestedCapabilities: ['FilesystemRead'],
       evidence,
+      requiredProbes: LINUX_REQUIRED_SANDBOX_PROBES,
     });
-    if (transport.platform === 'wsl2' && ['wsl_windows_mount_hidden', 'wsl_interop_hidden', 'wsl_windows_path_hidden']
+    if (!bootstrapPassed) {
+      return new LinuxNamespaceBackend(readReport, options.workspaceRoot, workspacePath, transport);
+    }
+    if (transport.platform === 'wsl2' && WSL_PROBES
       .some((probeId) => statuses.get(probeId) !== 'passed')) {
       return new LinuxNamespaceBackend({ ...readReport, capabilities: [] }, options.workspaceRoot, workspacePath, transport);
     }
@@ -114,10 +136,23 @@ export class LinuxNamespaceBackend implements SandboxBackend {
   }
 
   async openTask(_input: { readonly taskId: string; readonly sandboxId: string; readonly budget: ResourceBudget }): Promise<TaskSandboxBackend> {
-    if (!this.report.capabilities.includes('FilesystemRead')) throw new Error('SANDBOX_UNCERTIFIED');
+    if (!this.report.capabilities.includes('FilesystemRead')) {
+      throw new Error(`SANDBOX_UNCERTIFIED${linuxCertificationFailureSuffix(this.report)}`);
+    }
     const view = await TaskWorkspaceView.create(this.workspaceRoot);
     return new LinuxTaskSandbox(this.workspaceRoot, view, this.transport);
   }
+}
+
+export function linuxCertificationFailureProbeIds(report: CapabilityReport): readonly string[] {
+  const evidence = new Map(report.evidence.map((item) => [item.probeId, item.status]));
+  if (evidence.get(NAMESPACE_BOOTSTRAP_PROBE) !== 'passed') return Object.freeze([NAMESPACE_BOOTSTRAP_PROBE]);
+  return Object.freeze(LINUX_REQUIRED_SANDBOX_PROBES.filter((probeId) => evidence.get(probeId) !== 'passed'));
+}
+
+function linuxCertificationFailureSuffix(report: CapabilityReport): string {
+  const failures = linuxCertificationFailureProbeIds(report);
+  return failures.length === 0 ? '' : `: ${failures.join(',')}`;
 }
 
 class LinuxTaskSandbox implements TaskSandboxBackend {
