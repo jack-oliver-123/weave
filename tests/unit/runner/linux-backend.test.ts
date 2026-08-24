@@ -87,7 +87,9 @@ describe('Linux namespace backend certification', () => {
   });
 
   it('launches Linux unshare as a tokenized namespace init with an explicit tree terminator', () => {
-    const plan = namespaceLaunchPlan('linux', 'weave-namespace-test', ['--user', '/usr/bin/true']);
+    const plan = namespaceLaunchPlan(
+      'linux', 'weave-namespace-test', ['--user', '/usr/bin/true'], ['weave-cleanup-test'],
+    );
 
     expect(plan).toEqual({
       executable: '/usr/bin/bash',
@@ -95,8 +97,10 @@ describe('Linux namespace backend certification', () => {
         '--noprofile', '--norc', '-c', 'exec -a "$1" /usr/bin/unshare "${@:2}"',
         '_', 'weave-namespace-test', '--user', '/usr/bin/true',
       ],
-      terminateExecutable: 'pkill',
-      terminateArgs: ['-KILL', '-f', '--', 'weave-namespace-test'],
+      terminators: [
+        { executable: 'pkill', args: ['-KILL', '-f', '--', 'weave-cleanup-test'] },
+        { executable: 'pkill', args: ['-KILL', '-f', '--', 'weave-namespace-test'] },
+      ],
     });
   });
 });

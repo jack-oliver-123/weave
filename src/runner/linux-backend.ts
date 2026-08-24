@@ -419,14 +419,17 @@ export class HostNamespaceTransport implements NamespaceTransport {
     const encoded = [workspacePath, mode, ...args].map((value) => Buffer.from(value, 'utf8').toString('base64'));
     const unshare = ['--user', '--map-root-user', '--mount', '--pid', '--fork', '--net', '/usr/bin/bash', '-s', '--', ...encoded];
     const token = `weave-namespace-${randomUUID()}`;
-    const launch = namespaceLaunchPlan(this.platform, token, unshare);
+    const descendantTokens = mode === 'cleanup_probe' && args[0] !== undefined ? [args[0]] : [];
+    const launch = namespaceLaunchPlan(this.platform, token, unshare, descendantTokens);
     return runProcess(
       launch.executable,
       launch.args,
       NAMESPACE_SCRIPT,
       signal,
       async () => {
-        await runProcess(launch.terminateExecutable, launch.terminateArgs);
+        for (const terminator of launch.terminators) {
+          await runProcess(terminator.executable, terminator.args);
+        }
       },
     ).finally(() => debugLinuxCertification(`transport:${mode}:complete`));
   }
@@ -473,28 +476,36 @@ export function namespaceLaunchPlan(
   platform: 'linux' | 'wsl2',
   token: string,
   unshareArgs: readonly string[],
+  descendantTokens: readonly string[] = [],
 ): {
   readonly executable: string;
   readonly args: readonly string[];
-  readonly terminateExecutable: string;
-  readonly terminateArgs: readonly string[];
+  readonly terminators: readonly {
+    readonly executable: string;
+    readonly args: readonly string[];
+  }[];
 } {
   const bashArgs = [
     '--noprofile', '--norc', '-c', 'exec -a "$1" /usr/bin/unshare "${@:2}"',
     '_', token, ...unshareArgs,
   ];
+  const terminationTokens = [...descendantTokens, token];
   return platform === 'wsl2'
     ? {
         executable: 'wsl.exe',
         args: ['--exec', '/usr/bin/bash', ...bashArgs],
-        terminateExecutable: 'wsl.exe',
-        terminateArgs: ['--exec', 'pkill', '-KILL', '-f', '--', token],
+        terminators: terminationTokens.map((terminationToken) => ({
+          executable: 'wsl.exe',
+          args: ['--exec', 'pkill', '-KILL', '-f', '--', terminationToken],
+        })),
       }
     : {
         executable: '/usr/bin/bash',
         args: bashArgs,
-        terminateExecutable: 'pkill',
-        terminateArgs: ['-KILL', '-f', '--', token],
+        terminators: terminationTokens.map((terminationToken) => ({
+          executable: 'pkill',
+          args: ['-KILL', '-f', '--', terminationToken],
+        })),
       };
 }
 
