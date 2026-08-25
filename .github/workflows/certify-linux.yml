@@ -40,6 +40,8 @@ jobs:
             sudo apparmor_parser -r -W /etc/apparmor.d/weave-unshare
           fi
           /usr/bin/unshare --user --map-root-user --mount --pid --fork --net /usr/bin/true
+      - name: Collect Linux sandbox probe results
+        run: npx tsx scripts/collect-linux-certification-probes.ts linux
       - name: Run real Linux namespace certification
         id: certification
         env:
@@ -56,7 +58,7 @@ jobs:
         if: always() && steps.signing.outcome == 'success'
         env:
           WEAVE_CERTIFICATION_SIGNING_KEY: ${{ secrets.WEAVE_CERTIFICATION_SIGNING_KEY }}
-        run: node scripts/write-certification-evidence.mjs linux "${{ steps.certification.outcome }}" FilesystemRead,FilesystemWrite,ProcessSpawn namespace_bootstrap,process_identity,host_paths_hidden,raw_network_blocked,environment_cleared,devices_hidden,privilege_escalation_blocked,resource_limits,process_tree_cleanup,control_ipc_hidden,brokers_hidden
+        run: node scripts/write-certification-evidence.mjs linux "${{ steps.certification.outcome }}" FilesystemRead,FilesystemWrite,ProcessSpawn --probe-results artifacts/certification/linux-probes.json
       - name: Upload evidence
         if: always() && steps.evidence.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

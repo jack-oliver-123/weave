@@ -23,7 +23,8 @@ const windows = await readFile(new URL('../../.github/workflows/certify-windows.
 assert.match(windows, /self-hosted, Windows, X64, WSL2/);
 assert.match(windows, /certify-wsl2:[\s\S]*?WEAVE_BACKEND_VERSION:\s*linux-userns-v2/);
 assert.match(windows, /certify-wsl2:[\s\S]*?WEAVE_PROBE_VERSION:\s*['"]?2['"]?/);
-assert.match(windows, /certify-wsl2:[\s\S]*?namespace_bootstrap/);
+assert.match(windows, /certify-wsl2:[\s\S]*?collect-linux-certification-probes\.ts wsl2/);
+assert.match(windows, /certify-wsl2:[\s\S]*?--probe-results/);
 assert.match(windows, /self-hosted, Windows, X64, windows-sandbox-24h2/);
 assert.match(windows, /tests\/certification\/windows-sandbox\.test\.ts/);
 assert.match(windows, /FilesystemRead/);
@@ -31,6 +32,7 @@ assert.match(windows, /windows_registry_hidden/);
 
 const linux = await readFile(new URL('../../.github/workflows/certify-linux.yml', import.meta.url), 'utf8');
 const linuxSlice = await readFile(new URL('../certification/wsl2-read-tools.test.ts', import.meta.url), 'utf8');
+const linuxCollector = await readFile(new URL('../../scripts/collect-linux-certification-probes.ts', import.meta.url), 'utf8');
 assert.match(linux, /runs-on:\s*ubuntu-24\.04/);
 assert.match(linux, /kernel\/apparmor_restrict_unprivileged_userns/);
 assert.match(linux, /profile weave-unshare \/usr\/bin\/unshare flags=\(unconfined\)/);
@@ -43,6 +45,9 @@ assert.match(linux, /steps\.signing\.outcome == 'success'/);
 assert.match(linux, /steps\.evidence\.outcome == 'success'/);
 assert.match(linux, /WEAVE_BACKEND_VERSION:\s*linux-userns-v2/);
 assert.match(linux, /WEAVE_PROBE_VERSION:\s*['"]?2['"]?/);
+assert.match(linux, /collect-linux-certification-probes\.ts linux/);
+assert.match(linux, /--probe-results/);
 assert.match(linuxSlice, /}, 300_000\);/);
+assert.match(linuxCollector, /result\.status !== 'passed'[\s\S]*?process\.exitCode = 1/);
 
 process.stdout.write('Certification workflow contracts are valid\n');

@@ -50,6 +50,38 @@ describe('certification artifact', () => {
       join(directory, 'artifacts', 'certification', 'windows-sandbox.json'), facts, 'commit-1', trusted.store,
     )).rejects.toThrow('CERTIFICATION_EVIDENCE_SIGNATURE_INVALID');
   });
+
+  it('preserves individual probe results when the overall certification fails', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'weave-cert-artifact-results-'));
+    const resultsPath = join(directory, 'probe-results.json');
+    await writeFile(resultsPath, JSON.stringify([
+      { probeId: 'namespace_bootstrap', status: 'passed' },
+      { probeId: 'raw_network_blocked', status: 'failed' },
+    ]), 'utf8');
+    await promisify(execFile)(process.execPath, [
+      writer, 'linux', 'failure', '', '', '--probe-results', resultsPath,
+    ], {
+      cwd: directory,
+      env: {
+        ...process.env,
+        GITHUB_SHA: 'commit-1',
+        WEAVE_BACKEND_VERSION: 'linux-userns-v2',
+        WEAVE_PROBE_VERSION: '2',
+        WEAVE_CERTIFICATION_KEY_ID: trusted.keyId,
+        WEAVE_CERTIFICATION_SIGNING_KEY: trusted.privateKey,
+      },
+    });
+
+    const generated = JSON.parse(await readFile(
+      join(directory, 'artifacts', 'certification', 'linux.json'), 'utf8',
+    )) as { status: string; capabilities: string[]; probes: Array<{ probeId: string; status: string }> };
+    expect(generated.status).toBe('failed');
+    expect(generated.capabilities).toEqual([]);
+    expect(generated.probes).toEqual([
+      { probeId: 'namespace_bootstrap', status: 'passed' },
+      { probeId: 'raw_network_blocked', status: 'failed' },
+    ]);
+  });
 });
 
 async function generate(capabilities: string, probes: string, material = trusted): Promise<string> {

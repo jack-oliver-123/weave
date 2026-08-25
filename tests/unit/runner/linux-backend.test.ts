@@ -59,6 +59,8 @@ describe('Linux namespace backend certification', () => {
 
     expect(requiredMissing.report.capabilities).toEqual([]);
     expect(wslMissing.report.capabilities).toEqual([]);
+    expect(createLinuxSandboxUnavailableError(wslMissing.report).message)
+      .toBe('SANDBOX_UNAVAILABLE: wsl_interop_hidden');
     await expect(requiredMissing.openTask({ taskId: 'task', sandboxId: 'sandbox', budget: budget() }))
       .rejects.toThrow('SANDBOX_UNCERTIFIED');
   });

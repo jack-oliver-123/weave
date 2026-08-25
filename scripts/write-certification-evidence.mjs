@@ -1,19 +1,15 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { platform, release, version } from 'node:os';
 import { createHash, createPrivateKey, sign } from 'node:crypto';
 
-const [backend, outcome, capabilitiesValue = '', probesValue = ''] = process.argv.slice(2);
-if (!backend || !outcome) throw new Error('Usage: write-certification-evidence <backend> <outcome> [capabilities] [probes]');
+const arguments_ = process.argv.slice(2);
+const [backend, outcome, capabilitiesValue = ''] = arguments_;
+if (!backend || !outcome) throw new Error('Usage: write-certification-evidence <backend> <outcome> [capabilities] [probes] [--probe-results <path>]');
 const status = ({ success: 'passed', failure: 'failed', skipped: 'skipped', cancelled: 'unknown' })[outcome] ?? 'unknown';
 const capabilities = capabilitiesValue === '' ? [] : capabilitiesValue.split(',').filter(Boolean);
-const probes = probesValue === '' ? [] : probesValue.split(',').filter(Boolean).map((value) => {
-  const [probeId, explicitStatus] = value.split('=', 2);
-  const probeStatus = explicitStatus ?? status;
-  if (!/^[a-z0-9_]{1,128}$/.test(probeId) || !['passed', 'failed', 'not_run', 'skipped', 'unknown', 'flaky'].includes(probeStatus)) {
-    throw new Error(`Invalid probe result: ${value}`);
-  }
-  return { probeId, status: probeStatus };
-});
+const resultsFlag = arguments_.indexOf('--probe-results', 3);
+const probesValue = resultsFlag < 0 ? (arguments_[3] ?? '') : '';
+const probes = resultsFlag < 0 ? parseProbeValues(probesValue, status) : await readProbeResults(arguments_[resultsFlag + 1]);
 const unsignedEvidence = {
   schemaVersion: 1,
   commit: process.env.GITHUB_SHA ?? 'working-tree',
@@ -44,6 +40,37 @@ const evidence = {
 };
 await mkdir('artifacts/certification', { recursive: true });
 await writeFile(`artifacts/certification/${backend}.json`, `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
+
+function parseProbeValues(value, defaultStatus) {
+  return value === '' ? [] : value.split(',').filter(Boolean).map((item) => {
+    const [probeId, explicitStatus] = item.split('=', 2);
+    return validatedProbe(probeId, explicitStatus ?? defaultStatus);
+  });
+}
+
+async function readProbeResults(path) {
+  if (typeof path !== 'string' || path.length === 0) throw new Error('A probe results path is required');
+  const metadata = await lstat(path);
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 64 * 1024) {
+    throw new Error('Probe results file is untrusted');
+  }
+  let parsed;
+  try { parsed = JSON.parse(await readFile(path, 'utf8')); } catch { throw new Error('Probe results file is invalid'); }
+  if (!Array.isArray(parsed)) throw new Error('Probe results file is invalid');
+  const results = parsed.map((item) => {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) throw new Error('Probe results file is invalid');
+    return validatedProbe(item.probeId, item.status);
+  });
+  if (new Set(results.map((item) => item.probeId)).size !== results.length) throw new Error('Probe results file is invalid');
+  return results;
+}
+
+function validatedProbe(probeId, probeStatus) {
+  if (!/^[a-z0-9_]{1,128}$/.test(probeId) || !['passed', 'failed', 'not_run', 'skipped', 'unknown', 'flaky'].includes(probeStatus)) {
+    throw new Error(`Invalid probe result: ${String(probeId)}`);
+  }
+  return { probeId, status: probeStatus };
+}
 
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;

@@ -22,13 +22,8 @@ const suite = describe.runIf(certificationTarget === 'linux' || certificationTar
 
 suite('Linux/WSL2 read-tool certification', () => {
   it('runs the AgentLoop-to-OS slice and discloses ordered results only through the next model exchange', async () => {
-    const startedAt = Date.now();
-    debugCertification('workspace:start', startedAt);
     const workspace = await createWorkspace();
-    debugCertification('workspace:ready', startedAt);
-    debugCertification('runtime:start', startedAt);
     const runtime = await createCertifiedReadRunnerRuntime(workspace);
-    debugCertification('runtime:ready', startedAt);
     expect(runtime.capabilityReport.capabilities).toEqual(['FilesystemRead', 'FilesystemWrite', 'ProcessSpawn']);
     expect(runtime.capabilityReport.evidence.every((item) => item.status === 'passed')).toBe(true);
 
@@ -51,14 +46,12 @@ suite('Linux/WSL2 read-tool certification', () => {
     const task = await gateway.openTask(taskInput(workspace));
     const events: AgentEvent[] = [];
     try {
-      debugCertification('loop:start', startedAt);
       for await (const event of new AgentLoop(task).run({
         taskId: 'cert-task', runId: 'cert-run', kind: 'react', task: 'Inspect the workspace',
         signal: new AbortController().signal,
       })) {
         events.push(event);
         if (event.type === 'authorization_requested') {
-          debugCertification('authorization:requested', startedAt);
           task.resolveAuthorization({
             type: 'resolve_authorization', taskId: event.request.taskId,
             runId: event.request.runId,
@@ -67,13 +60,9 @@ suite('Linux/WSL2 read-tool certification', () => {
             decisions: event.request.items.map((item) => ({ callId: item.callId, actionDigest: item.actionDigest, choice: 'allow_once' })),
           });
         }
-        if (event.type === 'tool_call_completed') debugCertification(`tool:completed:${event.toolName}`, startedAt);
       }
-      debugCertification('loop:complete', startedAt);
     } finally {
-      debugCertification('task-close:start', startedAt);
       await task.close('completed');
-      debugCertification('task-close:complete', startedAt);
     }
 
     const completed = events.filter((event) => event.type === 'tool_call_completed');
@@ -119,10 +108,6 @@ suite('Linux/WSL2 read-tool certification', () => {
     expect(businessAudit.filter((record) => record.phase === 'outcome')).toHaveLength(9);
   }, 300_000);
 });
-
-function debugCertification(stage: string, startedAt: number): void {
-  process.stdout.write(`[DEBUG-linux-cert] ${stage} ${Date.now() - startedAt}ms\n`);
-}
 
 class CertificationProvider {
   readonly resource: CertificationProviderResource;

@@ -38,7 +38,7 @@ Host transport 根据初始 probe 执行是否成功进入隔离脚本、正常�
 
 ### 5. workflow 分离认证、签名配置和 artifact 步骤
 
-完整沙箱测试保持独立 step。无论测试是否通过，后续签名配置检查都明确验证 Secret 是否存在；只有配置有效时才生成与上传签名 outcome artifact。失败测试生成 capabilities 为空的 `failed` artifact，缺少 Secret 则生成独立配置错误且不产生未签名文件。私钥只能由 GitHub Secret 注入，仓库只保留格式与公钥部署说明。
+完整沙箱测试保持独立 step。Linux 与 WSL2 在测试前分别运行 backend probe collector，只把严格校验的 `probeId/status` JSON 交给签名 writer；即使后置 AgentLoop 切片失败，已经通过的 bootstrap 与负向 probes 也保持真实逐项状态。无法形成 Capability Report 时 collector 记录 `unknown` 并失败关闭。无论测试是否通过，后续签名配置检查都明确验证 Secret 是否存在；只有配置有效时才生成与上传签名 outcome artifact。失败测试生成 capabilities 为空的 `failed` artifact，缺少 Secret 则生成独立配置错误且不产生未签名文件。私钥只能由 GitHub Secret 注入，仓库只保留格式与公钥部署说明。
 
 ### 6. 远端证据决定 Linux 状态
 

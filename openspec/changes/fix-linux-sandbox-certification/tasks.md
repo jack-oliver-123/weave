@@ -8,4 +8,4 @@
 
 ## 3. 恢复可核验的认证状态
 
-- [ ] 3.1 ([#40](https://github.com/jack-oliver-123/weave/issues/40)) 将 Linux 当前状态更新为绑定两次远端失败运行的 `failed`，运行完整测试、类型检查、lint、构建、严格 OpenSpec 与文档验证；在 Secret、commit、push 和 workflow 调度分别获得授权后，以绑定精确提交的签名 `passed` artifact 完成远端验收，未获得该证据前不得标记通过
+- [x] 3.1 ([#40](https://github.com/jack-oliver-123/weave/issues/40)) 将 Linux 当前状态更新为绑定两次远端失败运行的 `failed`，运行完整测试、类型检查、lint、构建、严格 OpenSpec 与文档验证；在 Secret、commit、push 和 workflow 调度分别获得授权后，以绑定精确提交的签名 `passed` artifact 完成远端验收，未获得该证据前不得标记通过

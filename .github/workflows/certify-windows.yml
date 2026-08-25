@@ -23,6 +23,8 @@ jobs:
           node-version: 22.x
           cache: npm
       - run: npm ci
+      - name: Collect WSL2 sandbox probe results
+        run: npx tsx scripts/collect-linux-certification-probes.ts wsl2
       - name: Run real WSL2 namespace certification
         id: certification
         env:
@@ -32,7 +34,7 @@ jobs:
         if: always()
         env:
           WEAVE_CERTIFICATION_SIGNING_KEY: ${{ secrets.WEAVE_CERTIFICATION_SIGNING_KEY }}
-        run: node scripts/write-certification-evidence.mjs wsl2 "${{ steps.certification.outcome }}" FilesystemRead,FilesystemWrite,ProcessSpawn namespace_bootstrap,process_identity,host_paths_hidden,raw_network_blocked,environment_cleared,devices_hidden,privilege_escalation_blocked,resource_limits,process_tree_cleanup,control_ipc_hidden,brokers_hidden,wsl_windows_mount_hidden,wsl_interop_hidden,wsl_windows_path_hidden
+        run: node scripts/write-certification-evidence.mjs wsl2 "${{ steps.certification.outcome }}" FilesystemRead,FilesystemWrite,ProcessSpawn --probe-results artifacts/certification/wsl2-probes.json
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -19,7 +19,9 @@ const MAX_SCAN_BYTES = 1024 * 1024;
 const BACKEND_VERSION = 'linux-userns-v2';
 const PROBE_VERSION = '2';
 const NAMESPACE_BOOTSTRAP_PROBE = 'namespace_bootstrap';
-const WSL_PROBES = Object.freeze(['wsl_windows_mount_hidden', 'wsl_interop_hidden', 'wsl_windows_path_hidden']);
+export const WSL_REQUIRED_ESCAPE_PROBES = Object.freeze([
+  'wsl_windows_mount_hidden', 'wsl_interop_hidden', 'wsl_windows_path_hidden',
+]);
 const RUNTIME_PROBES = Object.freeze(['write_worker_runtime', 'atomic_replace', 'bash_runtime', 'timeout_runtime']);
 export const LINUX_REQUIRED_SANDBOX_PROBES = Object.freeze([
   NAMESPACE_BOOTSTRAP_PROBE,
@@ -63,7 +65,6 @@ export class LinuxNamespaceBackend implements SandboxBackend {
     const statuses = parseProbeOutput(probe.stdout.toString('utf8'));
     const inlineProbes = [
       ...REQUIRED_SANDBOX_PROBES.filter((probeId) => probeId !== 'process_tree_cleanup'),
-      ...(transport.platform === 'wsl2' ? WSL_PROBES : []),
       ...RUNTIME_PROBES,
     ];
     const bootstrapPassed = probe.exitCode === 0
@@ -87,7 +88,7 @@ export class LinuxNamespaceBackend implements SandboxBackend {
       evidenceDigest: evidenceDigest(probeId, statuses.get(probeId) ?? 'missing'),
     }));
     if (transport.platform === 'wsl2') {
-      for (const probeId of WSL_PROBES) {
+      for (const probeId of WSL_REQUIRED_ESCAPE_PROBES) {
         const status = statuses.get(probeId) === 'passed' ? 'passed' : 'failed';
         evidence.push({
           probeId, status, commit: options.commit ?? 'working-tree', os: transport.osDescription,
@@ -115,7 +116,7 @@ export class LinuxNamespaceBackend implements SandboxBackend {
     if (!bootstrapPassed) {
       return new LinuxNamespaceBackend(readReport, options.workspaceRoot, workspacePath, transport);
     }
-    if (transport.platform === 'wsl2' && WSL_PROBES
+    if (transport.platform === 'wsl2' && WSL_REQUIRED_ESCAPE_PROBES
       .some((probeId) => statuses.get(probeId) !== 'passed')) {
       return new LinuxNamespaceBackend({ ...readReport, capabilities: [] }, options.workspaceRoot, workspacePath, transport);
     }
@@ -147,7 +148,10 @@ export class LinuxNamespaceBackend implements SandboxBackend {
 export function linuxCertificationFailureProbeIds(report: CapabilityReport): readonly string[] {
   const evidence = new Map(report.evidence.map((item) => [item.probeId, item.status]));
   if (evidence.get(NAMESPACE_BOOTSTRAP_PROBE) !== 'passed') return Object.freeze([NAMESPACE_BOOTSTRAP_PROBE]);
-  return Object.freeze(LINUX_REQUIRED_SANDBOX_PROBES.filter((probeId) => evidence.get(probeId) !== 'passed'));
+  const required = report.backend === 'wsl2'
+    ? [...LINUX_REQUIRED_SANDBOX_PROBES, ...WSL_REQUIRED_ESCAPE_PROBES]
+    : LINUX_REQUIRED_SANDBOX_PROBES;
+  return Object.freeze(required.filter((probeId) => evidence.get(probeId) !== 'passed'));
 }
 
 function linuxCertificationFailureSuffix(report: CapabilityReport): string {
@@ -206,15 +210,11 @@ class TransactionalLinuxWorker implements ActionWorkerBackend {
   ) {}
 
   async execute(signal: AbortSignal): Promise<ActionWorkerResult> {
-    debugLinuxCertification(`transaction:${this.delegate.call.name}:start`);
     const outcome = await this.delegate.execute(signal);
-    debugLinuxCertification(`transaction:${this.delegate.call.name}:worker-complete`);
     const errorCode = outcome.result.content.error?.code;
     if ((outcome.result.isError && errorCode !== 'COMMAND_FAILED') || signal.aborted) return outcome;
     try {
-      debugLinuxCertification(`transaction:${this.delegate.call.name}:extract-start`);
       const extracted = await this.view.extractChangeSet(this.delegate.actionId);
-      debugLinuxCertification(`transaction:${this.delegate.call.name}:extract-complete`);
       const changeSet: WorkspaceChangeSet = {
         actionId: extracted.actionId,
         changes: extracted.changes.map((change) => ({
@@ -222,11 +222,8 @@ class TransactionalLinuxWorker implements ActionWorkerBackend {
           baseline: this.baselines.get(change.path) ?? { exists: false },
         })),
       };
-      debugLinuxCertification(`transaction:${this.delegate.call.name}:commit-start`);
       await this.broker.commit(changeSet);
-      debugLinuxCertification(`transaction:${this.delegate.call.name}:commit-complete`);
       await this.adopt();
-      debugLinuxCertification(`transaction:${this.delegate.call.name}:adopt-complete`);
       this.adopted = true;
       return outcome;
     } catch (error) {
@@ -415,7 +412,6 @@ export class HostNamespaceTransport implements NamespaceTransport {
   }
 
   run(workspacePath: string, mode: string, args: readonly string[], signal?: AbortSignal): Promise<NamespaceExecution> {
-    debugLinuxCertification(`transport:${mode}:start`);
     const encoded = [workspacePath, mode, ...args].map((value) => Buffer.from(value, 'utf8').toString('base64'));
     const unshare = ['--user', '--map-root-user', '--mount', '--pid', '--fork', '--net', '/usr/bin/bash', '-s', '--', ...encoded];
     const token = `weave-namespace-${randomUUID()}`;
@@ -431,7 +427,7 @@ export class HostNamespaceTransport implements NamespaceTransport {
           await runProcess(terminator.executable, terminator.args);
         }
       },
-    ).finally(() => debugLinuxCertification(`transport:${mode}:complete`));
+    );
   }
 
   async verifyProcessTreeCleanup(workspacePath: string): Promise<boolean> {
@@ -771,12 +767,6 @@ function parseProbeOutput(output: string): Map<string, string> {
     const index = line.indexOf('=');
     return index < 0 ? [line, 'invalid'] : [line.slice(0, index), line.slice(index + 1)];
   }));
-}
-
-function debugLinuxCertification(stage: string): void {
-  if (process.env.WEAVE_BACKEND_CERTIFICATION === 'linux' || process.env.WEAVE_BACKEND_CERTIFICATION === 'wsl2') {
-    process.stdout.write(`[DEBUG-linux-cert] backend:${stage}\n`);
-  }
 }
 
 async function waitForProcessIds(probe: () => Promise<readonly number[]>, timeoutMs: number): Promise<readonly number[]> {
