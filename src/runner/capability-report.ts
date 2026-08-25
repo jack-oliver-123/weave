@@ -34,9 +34,11 @@ export function buildCapabilityReport(input: {
   readonly backendVersion: string;
   readonly requestedCapabilities: readonly CapabilityPrimitive[];
   readonly evidence: readonly ProbeEvidence[];
+  readonly requiredProbes?: readonly string[];
 }): CapabilityReport {
   const byId = new Map(input.evidence.map((item) => [item.probeId, item]));
-  const certified = REQUIRED_SANDBOX_PROBES.every((probe) => byId.get(probe)?.status === 'passed');
+  const requiredProbes = input.requiredProbes ?? REQUIRED_SANDBOX_PROBES;
+  const certified = requiredProbes.every((probe) => byId.get(probe)?.status === 'passed');
   return Object.freeze({
     schemaVersion: 1,
     runnerId: input.runnerId,

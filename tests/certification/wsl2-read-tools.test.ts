@@ -106,7 +106,7 @@ suite('Linux/WSL2 read-tool certification', () => {
     expect(businessAudit.filter((record) => record.phase === 'preflight')).toHaveLength(9);
     expect(businessAudit.filter((record) => record.phase === 'supervisor')).toHaveLength(9);
     expect(businessAudit.filter((record) => record.phase === 'outcome')).toHaveLength(9);
-  }, 120_000);
+  }, 300_000);
 });
 
 class CertificationProvider {

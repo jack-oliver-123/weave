@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   LinuxNamespaceBackend,
   REQUIRED_SANDBOX_PROBES,
+  createLinuxSandboxUnavailableError,
   linuxReadToolDefinitions,
+  namespaceLaunchPlan,
   type NamespaceExecution,
   type NamespaceTransport,
 } from '../../../src/runner/index.js';
@@ -17,9 +19,30 @@ describe('Linux namespace backend certification', () => {
     });
 
     expect(backend.report.capabilities).toEqual(['FilesystemRead', 'FilesystemWrite', 'ProcessSpawn']);
-    expect(backend.report.evidence).toHaveLength(REQUIRED_SANDBOX_PROBES.length + 7);
+    expect(backend.report.evidence).toHaveLength(REQUIRED_SANDBOX_PROBES.length + 8);
     expect(backend.report.evidence.every((item) => item.status === 'passed')).toBe(true);
     expect(backend.report.evidence.every((item) => item.commit === 'commit-1')).toBe(true);
+    expect(backend.report.backendVersion).toBe('linux-userns-v2');
+    expect(backend.report.evidence.find((item) => item.probeId === 'namespace_bootstrap')).toMatchObject({
+      status: 'passed', probeVersion: '2', backendVersion: 'linux-userns-v2',
+    });
+  });
+
+  it.each([
+    { name: 'non-zero bootstrap', execution: execution(passedProbeOutput(), 1) },
+    { name: 'incomplete probe output', execution: execution('process_identity=passed\n') },
+  ])('fails closed without running cleanup for $name', async ({ execution }) => {
+    const transport = new FakeTransport(execution);
+    const backend = await LinuxNamespaceBackend.create({
+      workspaceRoot: 'C:\\workspace', transport, transactionRecovery: async () => true,
+    });
+
+    expect(transport.cleanupProbeCalls).toBe(0);
+    expect(backend.report.capabilities).toEqual([]);
+    expect(backend.report.evidence.find((item) => item.probeId === 'namespace_bootstrap')?.status).toBe('failed');
+    expect(createLinuxSandboxUnavailableError(backend.report).message).toBe('SANDBOX_UNAVAILABLE: namespace_bootstrap');
+    await expect(backend.openTask({ taskId: 'task', sandboxId: 'sandbox', budget: budget() }))
+      .rejects.toThrow('SANDBOX_UNCERTIFIED: namespace_bootstrap');
   });
 
   it('fails closed when a required or WSL2 escape probe is missing', async () => {
@@ -36,12 +59,14 @@ describe('Linux namespace backend certification', () => {
 
     expect(requiredMissing.report.capabilities).toEqual([]);
     expect(wslMissing.report.capabilities).toEqual([]);
+    expect(createLinuxSandboxUnavailableError(wslMissing.report).message)
+      .toBe('SANDBOX_UNAVAILABLE: wsl_interop_hidden');
     await expect(requiredMissing.openTask({ taskId: 'task', sandboxId: 'sandbox', budget: budget() }))
       .rejects.toThrow('SANDBOX_UNCERTIFIED');
   });
 
   it('treats the host-observed long-lived child cleanup result as authoritative', async () => {
-    const transport = new FakeTransport(passedProbeOutput(), false);
+    const transport = new FakeTransport(execution(passedProbeOutput()), false);
     const backend = await LinuxNamespaceBackend.create({
       workspaceRoot: 'C:\\workspace', transport, transactionRecovery: async () => true,
     });
@@ -62,21 +87,46 @@ describe('Linux namespace backend certification', () => {
   it('exposes only the certified read tool surface', () => {
     expect(linuxReadToolDefinitions().map((tool) => tool.name)).toEqual(['read_file', 'glob', 'grep', 'create_file', 'edit_file', 'bash']);
   });
+
+  it('launches Linux unshare as a tokenized namespace init with an explicit tree terminator', () => {
+    const plan = namespaceLaunchPlan(
+      'linux', 'weave-namespace-test', ['--user', '/usr/bin/true'], ['weave-cleanup-test'],
+    );
+
+    expect(plan).toEqual({
+      executable: '/usr/bin/bash',
+      args: [
+        '--noprofile', '--norc', '-c', 'exec -a "$1" /usr/bin/unshare "${@:2}"',
+        '_', 'weave-namespace-test', '--user', '/usr/bin/true',
+      ],
+      terminators: [
+        { executable: 'pkill', args: ['-KILL', '-f', '--', 'weave-cleanup-test'] },
+        { executable: 'pkill', args: ['-KILL', '-f', '--', 'weave-namespace-test'] },
+      ],
+    });
+  });
 });
 
 class FakeTransport implements NamespaceTransport {
   readonly platform = 'wsl2' as const;
   readonly osDescription = '6.6.0-microsoft-standard-WSL2';
   cleanupProbeCalls = 0;
-  constructor(private readonly output: string, private readonly cleanup = true) {}
+  private readonly execution: NamespaceExecution;
+  constructor(executionOrOutput: NamespaceExecution | string, private readonly cleanup = true) {
+    this.execution = typeof executionOrOutput === 'string' ? execution(executionOrOutput) : executionOrOutput;
+  }
   async toSandboxPath(): Promise<string> { return '/mnt/c/workspace'; }
   async run(): Promise<NamespaceExecution> {
-    return { stdout: Buffer.from(this.output), stderr: Buffer.alloc(0), exitCode: 0 };
+    return this.execution;
   }
   async verifyProcessTreeCleanup(): Promise<boolean> {
     this.cleanupProbeCalls += 1;
     return this.cleanup;
   }
+}
+
+function execution(stdout: string, exitCode = 0): NamespaceExecution {
+  return { stdout: Buffer.from(stdout), stderr: Buffer.from('sensitive host diagnostic'), exitCode };
 }
 
 function passedProbeOutput(): string {

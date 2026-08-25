@@ -10,6 +10,7 @@ title: OpenSpec 变更
 
 ## 已归档
 
+- [fix-linux-sandbox-certification](/changes/archive/2026-08-25-fix-linux-sandbox-certification/)
 - [align-engineering-skills-with-openspec](/changes/archive/2026-08-17-align-engineering-skills-with-openspec/)
 - [add-agent-permission-system](/changes/archive/2026-08-15-add-agent-permission-system/)
 - [add-production-prompt-assembly](/changes/archive/2026-08-14-add-production-prompt-assembly/)

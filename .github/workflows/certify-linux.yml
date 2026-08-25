@@ -13,10 +13,11 @@ env:
 
 jobs:
   certify-linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
-      WEAVE_BACKEND_VERSION: linux-userns-v1
+      WEAVE_BACKEND_VERSION: linux-userns-v2
+      WEAVE_PROBE_VERSION: '2'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -24,18 +25,42 @@ jobs:
           node-version: 22.x
           cache: npm
       - run: npm ci
+      - name: Prepare unprivileged namespace certification
+        shell: bash
+        run: |
+          if [[ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || true)" == "1" ]]; then
+            sudo tee /etc/apparmor.d/weave-unshare >/dev/null <<'EOF'
+          abi <abi/4.0>,
+          include <tunables/global>
+
+          profile weave-unshare /usr/bin/unshare flags=(unconfined) {
+            userns,
+          }
+          EOF
+            sudo apparmor_parser -r -W /etc/apparmor.d/weave-unshare
+          fi
+          /usr/bin/unshare --user --map-root-user --mount --pid --fork --net /usr/bin/true
+      - name: Collect Linux sandbox probe results
+        run: npx tsx scripts/collect-linux-certification-probes.ts linux
       - name: Run real Linux namespace certification
         id: certification
         env:
           WEAVE_BACKEND_CERTIFICATION: linux
         run: npx vitest run tests/certification/wsl2-read-tools.test.ts
-      - name: Write bound evidence
+      - name: Validate certification signing configuration
+        id: signing
         if: always()
         env:
           WEAVE_CERTIFICATION_SIGNING_KEY: ${{ secrets.WEAVE_CERTIFICATION_SIGNING_KEY }}
-        run: node scripts/write-certification-evidence.mjs linux "${{ steps.certification.outcome }}" FilesystemRead,FilesystemWrite,ProcessSpawn process_identity,host_paths_hidden,raw_network_blocked,environment_cleared,devices_hidden,privilege_escalation_blocked,resource_limits,process_tree_cleanup,control_ipc_hidden,brokers_hidden
+        run: test -n "$WEAVE_CERTIFICATION_SIGNING_KEY"
+      - name: Write bound evidence
+        id: evidence
+        if: always() && steps.signing.outcome == 'success'
+        env:
+          WEAVE_CERTIFICATION_SIGNING_KEY: ${{ secrets.WEAVE_CERTIFICATION_SIGNING_KEY }}
+        run: node scripts/write-certification-evidence.mjs linux "${{ steps.certification.outcome }}" FilesystemRead,FilesystemWrite,ProcessSpawn --probe-results artifacts/certification/linux-probes.json
       - name: Upload evidence
-        if: always()
+        if: always() && steps.evidence.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: certification-linux-${{ github.sha }}

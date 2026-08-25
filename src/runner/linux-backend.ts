@@ -16,7 +16,17 @@ import {
 
 const MAX_RESULTS = 1_000;
 const MAX_SCAN_BYTES = 1024 * 1024;
-const BACKEND_VERSION = 'linux-userns-v1';
+const BACKEND_VERSION = 'linux-userns-v2';
+const PROBE_VERSION = '2';
+const NAMESPACE_BOOTSTRAP_PROBE = 'namespace_bootstrap';
+export const WSL_REQUIRED_ESCAPE_PROBES = Object.freeze([
+  'wsl_windows_mount_hidden', 'wsl_interop_hidden', 'wsl_windows_path_hidden',
+]);
+const RUNTIME_PROBES = Object.freeze(['write_worker_runtime', 'atomic_replace', 'bash_runtime', 'timeout_runtime']);
+export const LINUX_REQUIRED_SANDBOX_PROBES = Object.freeze([
+  NAMESPACE_BOOTSTRAP_PROBE,
+  ...REQUIRED_SANDBOX_PROBES,
+]);
 
 export interface LinuxNamespaceBackendOptions {
   readonly workspaceRoot: string;
@@ -53,36 +63,45 @@ export class LinuxNamespaceBackend implements SandboxBackend {
     const workspacePath = await transport.toSandboxPath(options.workspaceRoot);
     const probe = await transport.run(workspacePath, 'probe', []);
     const statuses = parseProbeOutput(probe.stdout.toString('utf8'));
-    if (transport.verifyProcessTreeCleanup !== undefined) {
+    const inlineProbes = [
+      ...REQUIRED_SANDBOX_PROBES.filter((probeId) => probeId !== 'process_tree_cleanup'),
+      ...RUNTIME_PROBES,
+    ];
+    const bootstrapPassed = probe.exitCode === 0
+      && inlineProbes.every((probeId) => ['passed', 'failed'].includes(statuses.get(probeId) ?? ''));
+    statuses.set(NAMESPACE_BOOTSTRAP_PROBE, bootstrapPassed ? 'passed' : 'failed');
+    if (bootstrapPassed && transport.verifyProcessTreeCleanup !== undefined) {
       let cleanupPassed = false;
       try { cleanupPassed = await transport.verifyProcessTreeCleanup(workspacePath); } catch { cleanupPassed = false; }
       statuses.set('process_tree_cleanup', cleanupPassed ? 'passed' : 'failed');
+    } else if (!bootstrapPassed) {
+      statuses.set('process_tree_cleanup', 'failed');
     }
-    const evidence: ProbeEvidence[] = REQUIRED_SANDBOX_PROBES.map((probeId) => ({
+    const evidence: ProbeEvidence[] = LINUX_REQUIRED_SANDBOX_PROBES.map((probeId) => ({
       probeId,
       status: statuses.get(probeId) === 'passed' ? 'passed' : 'failed',
       commit: options.commit ?? 'working-tree',
       os: transport.osDescription,
       backend: transport.platform,
       backendVersion: BACKEND_VERSION,
-      probeVersion: '1',
+      probeVersion: PROBE_VERSION,
       evidenceDigest: evidenceDigest(probeId, statuses.get(probeId) ?? 'missing'),
     }));
     if (transport.platform === 'wsl2') {
-      for (const probeId of ['wsl_windows_mount_hidden', 'wsl_interop_hidden', 'wsl_windows_path_hidden']) {
+      for (const probeId of WSL_REQUIRED_ESCAPE_PROBES) {
         const status = statuses.get(probeId) === 'passed' ? 'passed' : 'failed';
         evidence.push({
           probeId, status, commit: options.commit ?? 'working-tree', os: transport.osDescription,
-          backend: 'wsl2', backendVersion: BACKEND_VERSION, probeVersion: '1',
+          backend: 'wsl2', backendVersion: BACKEND_VERSION, probeVersion: PROBE_VERSION,
           evidenceDigest: evidenceDigest(probeId, status),
         });
       }
     }
-    for (const probeId of ['write_worker_runtime', 'atomic_replace', 'bash_runtime', 'timeout_runtime']) {
+    for (const probeId of RUNTIME_PROBES) {
       const status = statuses.get(probeId) === 'passed' ? 'passed' : 'failed';
       evidence.push({
         probeId, status, commit: options.commit ?? 'working-tree', os: transport.osDescription,
-        backend: transport.platform, backendVersion: BACKEND_VERSION, probeVersion: '1',
+        backend: transport.platform, backendVersion: BACKEND_VERSION, probeVersion: PROBE_VERSION,
         evidenceDigest: evidenceDigest(probeId, status),
       });
     }
@@ -92,8 +111,12 @@ export class LinuxNamespaceBackend implements SandboxBackend {
       backendVersion: BACKEND_VERSION,
       requestedCapabilities: ['FilesystemRead'],
       evidence,
+      requiredProbes: LINUX_REQUIRED_SANDBOX_PROBES,
     });
-    if (transport.platform === 'wsl2' && ['wsl_windows_mount_hidden', 'wsl_interop_hidden', 'wsl_windows_path_hidden']
+    if (!bootstrapPassed) {
+      return new LinuxNamespaceBackend(readReport, options.workspaceRoot, workspacePath, transport);
+    }
+    if (transport.platform === 'wsl2' && WSL_REQUIRED_ESCAPE_PROBES
       .some((probeId) => statuses.get(probeId) !== 'passed')) {
       return new LinuxNamespaceBackend({ ...readReport, capabilities: [] }, options.workspaceRoot, workspacePath, transport);
     }
@@ -114,10 +137,26 @@ export class LinuxNamespaceBackend implements SandboxBackend {
   }
 
   async openTask(_input: { readonly taskId: string; readonly sandboxId: string; readonly budget: ResourceBudget }): Promise<TaskSandboxBackend> {
-    if (!this.report.capabilities.includes('FilesystemRead')) throw new Error('SANDBOX_UNCERTIFIED');
+    if (!this.report.capabilities.includes('FilesystemRead')) {
+      throw new Error(`SANDBOX_UNCERTIFIED${linuxCertificationFailureSuffix(this.report)}`);
+    }
     const view = await TaskWorkspaceView.create(this.workspaceRoot);
     return new LinuxTaskSandbox(this.workspaceRoot, view, this.transport);
   }
+}
+
+export function linuxCertificationFailureProbeIds(report: CapabilityReport): readonly string[] {
+  const evidence = new Map(report.evidence.map((item) => [item.probeId, item.status]));
+  if (evidence.get(NAMESPACE_BOOTSTRAP_PROBE) !== 'passed') return Object.freeze([NAMESPACE_BOOTSTRAP_PROBE]);
+  const required = report.backend === 'wsl2'
+    ? [...LINUX_REQUIRED_SANDBOX_PROBES, ...WSL_REQUIRED_ESCAPE_PROBES]
+    : LINUX_REQUIRED_SANDBOX_PROBES;
+  return Object.freeze(required.filter((probeId) => evidence.get(probeId) !== 'passed'));
+}
+
+function linuxCertificationFailureSuffix(report: CapabilityReport): string {
+  const failures = linuxCertificationFailureProbeIds(report);
+  return failures.length === 0 ? '' : `: ${failures.join(',')}`;
 }
 
 class LinuxTaskSandbox implements TaskSandboxBackend {
@@ -353,18 +392,16 @@ export class HostNamespaceTransport implements NamespaceTransport {
   private constructor(
     readonly platform: 'linux' | 'wsl2',
     readonly osDescription: string,
-    private readonly executable: string,
   ) {}
 
   static async create(requested?: 'linux' | 'wsl2'): Promise<HostNamespaceTransport> {
     const platform = requested ?? (process.platform === 'win32' ? 'wsl2' : 'linux');
-    const executable = platform === 'wsl2' ? 'wsl.exe' : 'unshare';
     const version = platform === 'wsl2'
       ? await runProcess('wsl.exe', ['--exec', 'uname', '-r'])
       : await runProcess('uname', ['-r']);
     const description = version.stdout.toString('utf8').trim();
     if (platform === 'wsl2' && !/microsoft-standard-WSL2/i.test(description)) throw new Error('WSL1_UNSUPPORTED');
-    return new HostNamespaceTransport(platform, description, executable);
+    return new HostNamespaceTransport(platform, description);
   }
 
   async toSandboxPath(hostPath: string): Promise<string> {
@@ -377,18 +414,18 @@ export class HostNamespaceTransport implements NamespaceTransport {
   run(workspacePath: string, mode: string, args: readonly string[], signal?: AbortSignal): Promise<NamespaceExecution> {
     const encoded = [workspacePath, mode, ...args].map((value) => Buffer.from(value, 'utf8').toString('base64'));
     const unshare = ['--user', '--map-root-user', '--mount', '--pid', '--fork', '--net', '/usr/bin/bash', '-s', '--', ...encoded];
-    if (this.platform !== 'wsl2') return runProcess(this.executable, unshare, NAMESPACE_SCRIPT, signal);
     const token = `weave-namespace-${randomUUID()}`;
+    const descendantTokens = mode === 'cleanup_probe' && args[0] !== undefined ? [args[0]] : [];
+    const launch = namespaceLaunchPlan(this.platform, token, unshare, descendantTokens);
     return runProcess(
-      this.executable,
-      [
-        '--exec', '/usr/bin/bash', '--noprofile', '--norc', '-c',
-        'exec -a "$1" /usr/bin/unshare "${@:2}"', '_', token, ...unshare,
-      ],
+      launch.executable,
+      launch.args,
       NAMESPACE_SCRIPT,
       signal,
       async () => {
-        await runProcess('wsl.exe', ['--exec', 'pkill', '-KILL', '-f', '--', token]);
+        for (const terminator of launch.terminators) {
+          await runProcess(terminator.executable, terminator.args);
+        }
       },
     );
   }
@@ -429,6 +466,43 @@ export class HostNamespaceTransport implements NamespaceTransport {
     if (this.platform === 'wsl2') await runProcess('wsl.exe', ['--exec', 'kill', '-KILL', String(pid)]);
     else await runProcess('kill', ['-KILL', String(pid)]);
   }
+}
+
+export function namespaceLaunchPlan(
+  platform: 'linux' | 'wsl2',
+  token: string,
+  unshareArgs: readonly string[],
+  descendantTokens: readonly string[] = [],
+): {
+  readonly executable: string;
+  readonly args: readonly string[];
+  readonly terminators: readonly {
+    readonly executable: string;
+    readonly args: readonly string[];
+  }[];
+} {
+  const bashArgs = [
+    '--noprofile', '--norc', '-c', 'exec -a "$1" /usr/bin/unshare "${@:2}"',
+    '_', token, ...unshareArgs,
+  ];
+  const terminationTokens = [...descendantTokens, token];
+  return platform === 'wsl2'
+    ? {
+        executable: 'wsl.exe',
+        args: ['--exec', '/usr/bin/bash', ...bashArgs],
+        terminators: terminationTokens.map((terminationToken) => ({
+          executable: 'wsl.exe',
+          args: ['--exec', 'pkill', '-KILL', '-f', '--', terminationToken],
+        })),
+      }
+    : {
+        executable: '/usr/bin/bash',
+        args: bashArgs,
+        terminators: terminationTokens.map((terminationToken) => ({
+          executable: 'pkill',
+          args: ['-KILL', '-f', '--', terminationToken],
+        })),
+      };
 }
 
 const NAMESPACE_SCRIPT = String.raw`set -eu
