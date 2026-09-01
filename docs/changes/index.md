@@ -10,6 +10,7 @@ title: OpenSpec 变更
 
 ## 已归档
 
+- [allow-local-api-key-config](/changes/archive/2026-09-01-allow-local-api-key-config/)
 - [fix-linux-sandbox-certification](/changes/archive/2026-08-25-fix-linux-sandbox-certification/)
 - [align-engineering-skills-with-openspec](/changes/archive/2026-08-17-align-engineering-skills-with-openspec/)
 - [add-agent-permission-system](/changes/archive/2026-08-15-add-agent-permission-system/)

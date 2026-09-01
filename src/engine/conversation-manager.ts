@@ -374,7 +374,7 @@ export class ConversationManager implements ConversationController {
         protocol: this.client.profile.protocol,
         model: this.client.profile.model,
         origin,
-        credentialRef: this.options.credentialRef ?? 'legacy-provider-credential',
+        credentialRef: this.options.credentialRef ?? 'local-api-key',
       },
       pathBoundary: { readRoots: ['.'], writeRoots: toolsEnabled ? ['.'] : [] },
       ...(this.options.workspaceRoot === undefined ? {} : { workspaceRoot: this.options.workspaceRoot }),

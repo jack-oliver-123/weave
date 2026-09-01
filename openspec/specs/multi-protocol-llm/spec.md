@@ -7,9 +7,7 @@
 ## Requirements
 
 ### Requirement: 本地 YAML 配置模型 profile
-系统 SHALL 默认读取 `~/.weave/config.yaml`，并 SHALL 支持通过 `--config <path>` 覆盖配置路径。配置 SHALL 包含 `default_profile` 和 `profiles` 列表，每个 profile SHALL 使用唯一 `name`，并包含 `protocol`、`model`、`base_url`、`credential`、`thinking`，可选包含 `max_tokens` 和 `tools.enabled`；`credential` MUST 是操作系统凭据存储中的非秘密引用标识，MUST NOT 是凭据原文。配置根节点也可选包含 `tools.enabled`。工具启停优先级 SHALL 为命令行 `--tools` 或 `--no-tools`、当前 profile 的 `tools.enabled`、根节点的 `tools.enabled`、默认值 `true`；最终可用工具还 MUST 受权限模式和沙箱 Capability Report 收紧。除 `enabled` 外的未知 `tools` 字段 SHALL 被拒绝。
-
-旧 `api_key: ${ENVIRONMENT_VARIABLE}` MAY 在本 major 作为显式弃用迁移入口读取，但 MUST 仅由宿主 Credential Broker 解析，MUST 发出不含值的弃用诊断，并 MUST 在下一 major 移除。明文 `api_key` MUST 被拒绝。系统 SHALL 提供本地 `credential set`、`credential delete` 和 `credential list` 管理入口；写入 MUST 从隐藏输入或 stdin 接收，list MUST 只显示引用元数据而不显示秘密。
+系统 SHALL 默认读取 `~/.weave/config.yaml`，并 SHALL 支持通过 `--config <path>` 覆盖配置路径。配置 SHALL 包含 `default_profile` 和 `profiles` 列表，每个 profile SHALL 使用唯一 `name`，并包含 `protocol`、`model`、`base_url`、`thinking`，以及 `credential` 或 `api_key` 之一；可选包含 `max_tokens` 和 `tools.enabled`。`credential` MUST 是操作系统凭据存储中的非秘密引用标识，MUST NOT 是凭据原文。`api_key` MAY 是本地明文值或完整的 `${ENVIRONMENT_VARIABLE}` 引用；两种认证字段同时出现或都缺失 MUST 被拒绝。系统只可在主机进程内将解析后的 `api_key` 用作 Provider SDK 的认证材料，且 MUST NOT 将其写入启动诊断、日志、审计、模型上下文、工具参数、工具输出或沙箱。配置根节点也可选包含 `tools.enabled`。工具启停优先级 SHALL 为命令行 `--tools` 或 `--no-tools`、当前 profile 的 `tools.enabled`、根节点的 `tools.enabled`、默认值 `true`；最终可用工具还 MUST 受权限模式和沙箱 Capability Report 收紧。除 `enabled` 外的未知 `tools` 字段 SHALL 被拒绝。系统 SHALL 提供本地 `credential set`、`credential delete` 和 `credential list` 管理入口；写入 MUST 从隐藏输入或 stdin 接收，list MUST 只显示引用元数据而不显示秘密。
 
 #### Scenario: 使用默认 profile 启动
 - **WHEN** 用户未传入 `--profile`，且默认配置文件有效
@@ -40,8 +38,12 @@
 - **THEN** 系统在启动 TUI 前明确提示 thinking 暂未实现，且不得静默忽略该配置
 
 #### Scenario: API Key 配置形式
-- **WHEN** profile 包含明文 `api_key`、弃用的 `${ENVIRONMENT_VARIABLE}` 引用或新的 `credential` 引用
-- **THEN** 明文配置被拒绝，环境引用仅走带警告的宿主迁移通道，而 credential 引用在不暴露秘密的情况下通过校验
+- **WHEN** profile 包含本地明文 `api_key`、`${ENVIRONMENT_VARIABLE}` 引用或 `credential` 引用之一
+- **THEN** 系统解析对应认证来源并在不暴露秘密的情况下通过校验
+
+#### Scenario: API Key 与凭据引用同时配置
+- **WHEN** profile 同时包含 `api_key` 与 `credential`，或两者均未配置
+- **THEN** 系统在启动 TUI 前拒绝该 profile 并指出认证字段无效
 
 #### Scenario: 默认启用工具
 - **WHEN** 命令行、当前 profile 和根节点均未设置工具启停
@@ -132,7 +134,7 @@ OpenAI Chat Completions 适配 SHALL 从增量 chunk 提取文本与完成原因
 - **THEN** 系统终止本轮并返回脱敏的协议错误
 
 ### Requirement: 请求保持客户端无状态
-每次 Provider 请求 SHALL 由 Action Gateway 通过不透明 `ModelExchangeRef` 提供最终序列化的 `system`、`tools` 与 `messages`，并 SHALL 不使用 Provider 端会话状态。协议客户端 MUST NOT 接收 ConversationStore、Secure Context Ledger、权限规则、授权决定、票据、凭据原文或未守卫的原始消息；它只可发送 Input Guard 已批准的当前 envelope。固定 System 内容 MUST 位于其他协议字段之前，动态项目、计划、历史、路径、记忆和运行状态 MUST 保持为带 provenance 的 untrusted message，不能伪装成 system。
+每次 Provider 请求 SHALL 由 Action Gateway 通过不透明 `ModelExchangeRef` 提供最终序列化的 `system`、`tools` 与 `messages`，并 SHALL 不使用 Provider 端会话状态。协议客户端 MUST NOT 接收 ConversationStore、Secure Context Ledger、权限规则、授权决定、票据或未守卫的原始消息。使用 `credential` 的 profile 仅可将 Credential Reference 交给 Credential Broker；使用 `api_key` 的 profile 仅可在主机进程内向 Provider SDK 传递认证材料，且 MUST NOT 将该值写入最终请求 body、模型消息、诊断、重试载荷、错误、日志、审计或沙箱。协议客户端只可发送 Input Guard 已批准的当前 envelope。固定 System 内容 MUST 位于其他协议字段之前，动态项目、计划、历史、路径、记忆和运行状态 MUST 保持为带 provenance 的 untrusted message，不能伪装成 system。
 
 三个协议适配器 SHALL 按各自原生能力保持固定 System、工具定义和普通消息的语义边界。缓存是 Provider 能力而不是正确性前提：适配器 SHALL 形成缓存友好的固定前缀，并且只有目标 Provider 明确支持时才 SHALL 发送其原生缓存控制字段；兼容网关未支持或拒绝缓存字段时 MUST NOT 改变 Prompt 语义、目标绑定或静默删除已授权上下文。
 
@@ -274,11 +276,11 @@ JSON 序列化 SHALL 使用紧凑、稳定字段顺序，省略 `undefined`，�
 
 ### Requirement: Task 必须固定模型目的地
 
-Action Task Session MUST 在创建时固定 provider profile、protocol、model、规范化 origin 和 Credential Reference。模型目的地授权 MUST 绑定这些值；HTTP 重定向、自动 fallback、负载均衡到不同 origin、运行中模型切换或兼容网关改写目的地 MUST 被拒绝或作为新的 Task 显式建立，不能继承旧 destination grant。
+Action Task Session MUST 在创建时固定 provider profile、protocol、model、规范化 origin 和不含秘密的认证来源标识。对于 `credential` profile，该标识为 Credential Reference；对于 `api_key` profile，该标识只表达本地 API Key 认证模式且不得包含或可推导出密钥原文。模型目的地授权 MUST 绑定这些值；HTTP 重定向、自动 fallback、负载均衡到不同 origin、运行中模型切换或兼容网关改写目的地 MUST 被拒绝或作为新的 Task 显式建立，不能继承旧 destination grant。
 
 #### Scenario: Provider 返回跨主机重定向
 - **WHEN** 固定模型 origin 的请求响应要求重定向到另一主机
-- **THEN** 协议客户端不跟随重定向，当前模型交换失败且不会向新主机发送上下文或凭据
+- **THEN** 协议客户端不跟随重定向，当前模型交换失败且不会向新主机发送上下文或认证材料
 
 ### Requirement: 原始模型流与工具提案必须由 Gateway 保管
 
@@ -290,8 +292,8 @@ Action Task Session MUST 在创建时固定 provider profile、protocol、model�
 
 ### Requirement: Provider 凭据必须在发送边界按引用注入
 
-协议客户端 MUST 仅向 Credential Broker 提交当前固定 profile 的 Credential Reference 和当前目标 origin。Broker SHALL 在宿主网络发送边界注入所需认证材料，秘密 MUST NOT 写入请求对象诊断、重试载荷、错误、日志、模型上下文或沙箱。认证失败 MUST 返回脱敏错误且不得提示模型读取配置或环境变量。
+使用 `credential` 的协议客户端 MUST 仅向 Credential Broker 提交当前固定 profile 的 Credential Reference 和当前目标 origin。Broker SHALL 在宿主网络发送边界注入所需认证材料。使用 `api_key` 的协议客户端 MUST 仅在主机进程内把该密钥交给当前固定 origin 的 Provider SDK。两种模式下，秘密 MUST NOT 写入请求对象诊断、重试载荷、错误、日志、模型上下文或沙箱。认证失败 MUST 返回脱敏错误且不得提示模型读取配置或环境变量。
 
 #### Scenario: Provider 返回 401
-- **WHEN** 使用 Credential Reference 的固定模型请求收到认证失败
+- **WHEN** 使用 Credential Reference 或本地 API Key 的固定模型请求收到认证失败
 - **THEN** 用户得到不含秘密的 profile 诊断，模型和 AgentLoop 不接触凭据值

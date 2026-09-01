@@ -120,7 +120,7 @@ describe('loadConfig', () => {
     });
   });
 
-  it('preserves a complete environment variable reference for use-time migration', async () => {
+  it('resolves an environment API key for direct SDK authentication', async () => {
     const path = await writeConfig(
       validConfig().replace('credential: provider:claude-test', 'api_key: ${TEST_LLM_KEY}'),
     );
@@ -130,10 +130,9 @@ describe('loadConfig', () => {
       environment: { TEST_LLM_KEY: 'resolved-secret' },
     });
 
-    expect(loaded.selected.apiKey).toBeUndefined();
-    expect(loaded.selected.credentialRef).toBe('env:TEST_LLM_KEY');
-    expect(loaded.warnings).toHaveLength(1);
-    expect(JSON.stringify(loaded.warnings)).not.toContain('resolved-secret');
+    expect(loaded.selected.apiKey).toBe('resolved-secret');
+    expect(loaded.selected.credentialRef).toBeUndefined();
+    expect(loaded.warnings).toHaveLength(0);
   });
 
   it.each([
@@ -169,22 +168,37 @@ describe('loadConfig', () => {
     });
   });
 
-  it('does not leak plaintext keys in diagnostics', async () => {
-    const secret = 'never-print-this-secret';
+  it('loads a plaintext API key for local SDK authentication', async () => {
     const path = await writeConfig(
-      validConfig().replace('credential: provider:claude-test', `api_key: ${secret}`),
+      validConfig().replace('credential: provider:claude-test', 'api_key: local-test-key'),
     );
 
-    let thrown: unknown;
-    try {
-      await loadConfig({ configPath: path });
-    } catch (error) {
-      thrown = error;
-    }
+    const loaded = await loadConfig({ configPath: path });
 
-    expect(thrown).toBeInstanceOf(ConfigError);
-    expect(thrown).toMatchObject({ field: 'profiles[0].api_key' });
-    expect(String(thrown)).not.toContain(secret);
+    expect(loaded.selected.apiKey).toBe('local-test-key');
+    expect(loaded.selected.credentialRef).toBeUndefined();
+  });
+
+  it('rejects simultaneous credential and API key configuration without revealing the key', async () => {
+    const secret = 'local-test-key';
+    const path = await writeConfig(validConfig().replace(
+      'credential: provider:claude-test',
+      `credential: provider:claude-test\n    api_key: ${secret}`,
+    ));
+
+    await expect(loadConfig({ configPath: path })).rejects.toMatchObject({
+      field: 'profiles[0].credential',
+      message: 'credential and api_key cannot be configured together',
+    });
+    await expect(loadConfig({ configPath: path })).rejects.not.toThrow(secret);
+  });
+
+  it('requires one local authentication source for each profile', async () => {
+    const path = await writeConfig(validConfig().replace('    credential: provider:claude-test\n', ''));
+
+    await expect(loadConfig({ configPath: path })).rejects.toMatchObject({
+      field: 'profiles[0].api_key',
+    });
   });
 
   it('resolves tools.enabled using profile, root, CLI and default precedence', async () => {

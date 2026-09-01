@@ -8,6 +8,7 @@ import { DISABLED_THINKING, type DisabledThinking } from './request-extensions.j
 import { StreamCancelledError, StreamGuard } from './stream-guard.js';
 import { appendToolArguments, encodeAnthropicRequest, parseToolArguments } from './tool-codecs.js';
 import { guardEncodedProviderRequest } from './final-input-guard.js';
+import { createFixedOriginFetch } from './fixed-origin-fetch.js';
 
 interface AnthropicTransportRequest {
   readonly model: string;
@@ -186,6 +187,7 @@ function createSdkTransport(profile: ResolvedProfile, broker?: ProviderCredentia
         profile.credentialRef!, new URL(profile.baseUrl).origin, 'anthropic-api-key', input, init,
       )) as typeof fetch,
     }),
+    ...(profile.apiKey === undefined ? {} : { fetch: createFixedOriginFetch(profile.baseUrl) }),
   });
   return ({ model, messages, maxTokens, thinking, tools, toolChoice, system, signal }) => client.messages.stream({
     model,

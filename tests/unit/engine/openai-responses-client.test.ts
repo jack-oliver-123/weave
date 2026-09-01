@@ -14,6 +14,18 @@ const profile: ResolvedProfile = {
 };
 
 describe('OpenAIResponsesClient', () => {
+  it('本地 API Key 请求在 SDK 边界禁用重定向', async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 302 }));
+    vi.stubGlobal('fetch', fetch);
+    try {
+      await collect(new OpenAIResponsesClient(profile).stream(request()));
+      expect(fetch).toHaveBeenCalled();
+      expect(fetch.mock.calls[0]?.[1]).toMatchObject({ redirect: 'manual' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('转换语义事件、发送完整历史且不使用 previous_response_id', async () => {
     const transport = vi.fn(async () => nativeStream([
       { type: 'response.created', response: { id: 'r1' } },

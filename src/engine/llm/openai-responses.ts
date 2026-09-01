@@ -8,6 +8,7 @@ import { deepSeekResponsesReasoningExtension, type DisabledReasoning } from './r
 import { StreamCancelledError, StreamGuard } from './stream-guard.js';
 import { appendToolArguments, encodeResponsesRequest, parseToolArguments } from './tool-codecs.js';
 import { guardEncodedProviderRequest } from './final-input-guard.js';
+import { createFixedOriginFetch } from './fixed-origin-fetch.js';
 
 interface OpenAIResponsesTransportRequest {
   readonly model: string;
@@ -187,6 +188,7 @@ function createSdkTransport(profile: ResolvedProfile, broker?: ProviderCredentia
         profile.credentialRef!, new URL(profile.baseUrl).origin, 'bearer', input, init,
       )) as typeof fetch,
     }),
+    ...(profile.apiKey === undefined ? {} : { fetch: createFixedOriginFetch(profile.baseUrl) }),
   });
   return ({ model, messages, maxTokens, reasoning, tools, toolChoice, instructions, signal }) => client.responses.create({
     model,
