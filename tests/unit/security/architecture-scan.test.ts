@@ -23,11 +23,11 @@ describe('security architecture source scan', () => {
     expect(source).not.toMatch(/--unsafe|full_access/);
   });
 
-  it('rejects plaintext api_key in the example and retains only the warned migration parser', async () => {
+  it('keeps the example credential-backed without prohibiting local API keys', async () => {
     expect(await sourceOf('config.example.yaml')).not.toMatch(/api_key\s*:/);
     const parser = await sourceOf('src/config/index.ts');
-    expect(parser).toMatch(/api_key plaintext is forbidden/);
-    expect(parser).toMatch(/credential migration is deprecated/);
+    expect(parser).not.toMatch(/api_key plaintext is forbidden/);
+    expect(parser).toMatch(/return \{ apiKey: value \}/);
   });
 });
 

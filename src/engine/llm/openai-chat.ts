@@ -9,6 +9,7 @@ import { deepSeekThinkingExtension, type DisabledThinking } from './request-exte
 import { StreamCancelledError, StreamGuard } from './stream-guard.js';
 import { appendToolArguments, encodeChatRequest, parseToolArguments } from './tool-codecs.js';
 import { guardEncodedProviderRequest } from './final-input-guard.js';
+import { createFixedOriginFetch } from './fixed-origin-fetch.js';
 
 interface OpenAIChatTransportRequest {
   readonly model: string;
@@ -133,6 +134,7 @@ function createSdkTransport(profile: ResolvedProfile, broker?: ProviderCredentia
         profile.credentialRef!, new URL(profile.baseUrl).origin, 'bearer', input, init,
       )) as typeof fetch,
     }),
+    ...(profile.apiKey === undefined ? {} : { fetch: createFixedOriginFetch(profile.baseUrl) }),
   });
   return ({ model, messages, maxTokens, thinking, tools, toolChoice, signal }) => client.chat.completions.create({
     model,

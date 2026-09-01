@@ -126,13 +126,10 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Loade
   }
 
   const toolsEnabled = options.toolsEnabled ?? selected.toolsEnabled ?? rootToolsEnabled ?? true;
-  const warnings = profiles.some((profile) => profile.credentialRef?.startsWith('env:'))
-    ? ['${ENV} credential migration is deprecated; use `weave credential set` and a profile credential reference.']
-    : [];
   return {
     path, defaultProfile, profiles, selected, toolsEnabled, permissionMode, auditRetention,
     ...(sandboxBackend === undefined ? {} : { sandboxBackend }),
-    warnings: Object.freeze(warnings),
+    warnings: Object.freeze([]),
   };
 }
 
@@ -279,7 +276,7 @@ function parseCredential(
   environment: Readonly<Record<string, string | undefined>>,
   prefix: string,
   path: string,
-): { readonly credentialRef: string } {
+): { readonly credentialRef: string } | { readonly apiKey: string } {
   if (profile.credential !== undefined && profile.api_key !== undefined) {
     throw new ConfigError('credential and api_key cannot be configured together', `${prefix}.credential`, path);
   }
@@ -292,16 +289,13 @@ function parseCredential(
   }
   const field = `${prefix}.api_key`;
   const value = requireString(profile.api_key, field, path);
-  const match = ENV_REFERENCE.exec(value);
-  if (match === null) {
-    throw new ConfigError('api_key plaintext is forbidden; use a credential reference', field, path);
-  }
-  const environmentName = match[1];
+  const environmentName = ENV_REFERENCE.exec(value)?.[1];
+  if (environmentName === undefined) return { apiKey: value };
   const resolved = environment[environmentName];
   if (resolved === undefined || resolved.length === 0) {
     throw new ConfigError(`环境变量 ${environmentName} 未设置`, field, path);
   }
-  return { credentialRef: `env:${environmentName}` };
+  return { apiKey: resolved };
 }
 
 function requireString(value: unknown, field: string, path: string): string {

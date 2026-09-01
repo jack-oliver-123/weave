@@ -6,6 +6,7 @@ const activeItems = [
 ];
 
 const archivedItems = [
+  { text: "allow-local-api-key-config", link: "/changes/archive/2026-09-01-allow-local-api-key-config/" },
   { text: "fix-linux-sandbox-certification", link: "/changes/archive/2026-08-25-fix-linux-sandbox-certification/" },
   { text: "align-engineering-skills-with-openspec", link: "/changes/archive/2026-08-17-align-engineering-skills-with-openspec/" },
   { text: "add-agent-permission-system", link: "/changes/archive/2026-08-15-add-agent-permission-system/" },

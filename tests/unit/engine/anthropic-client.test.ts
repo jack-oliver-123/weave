@@ -19,6 +19,18 @@ const start = {
 };
 
 describe('AnthropicMessagesClient', () => {
+  it('本地 API Key 请求在 SDK 边界禁用重定向', async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 302 }));
+    vi.stubGlobal('fetch', fetch);
+    try {
+      await collect(new AnthropicMessagesClient(profile).stream(request()));
+      expect(fetch).toHaveBeenCalled();
+      expect(fetch.mock.calls[0]?.[1]).toMatchObject({ redirect: 'manual' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('按严格时序转换多个文本块、心跳、完成原因和真实 usage', async () => {
     const transport = vi.fn(async () => nativeStream([
       { type: 'message_start', message: { usage: { input_tokens: 11, cache_read_input_tokens: 6, cache_creation_input_tokens: 4 } } },

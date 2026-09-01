@@ -74,7 +74,7 @@ describe('对话端口集成', () => {
       policySnapshotId: 'policy-42',
       permissionRules: [expect.objectContaining({ id: 'deny-shell', effect: 'deny' })],
       modelDestination: {
-        profile: 'fake', protocol: 'openai-responses', model: 'fake-model', origin: 'https://provider.example',
+        profile: 'fake', protocol: 'openai-responses', model: 'fake-model', origin: 'https://provider.example', credentialRef: 'local-api-key',
       },
     });
     expect(client.requests[1]?.prompt.messages.at(-1)).toEqual({ role: 'user', content: '目标 A' });
